@@ -1,0 +1,10 @@
+# ts-rs writes the TypeScript bindings for peerline's `ts-export` feature into
+# the sibling `peerline-ts` repository, replacing its default `./bindings`.
+#
+# `relative = true` resolves the path against this file's grandparent — this
+# repo's root — so the export lands in the same place from any cwd, and so a
+# bare `cargo test --all-features` here can't scatter a stray `bindings/`
+# directory. The value reaches out of this repo on purpose: regenerating the
+# bindings is the one job that needs to see both languages at once.
+[env]
+TS_RS_EXPORT_DIR = { value = "../peerline-ts/src/generated", relative = true }

@@ -1,0 +1,21 @@
+{
+  "name": "@peerline/conformance-ts",
+  "version": "0.0.6",
+  "private": true,
+  "type": "module",
+  "description": "TypeScript half of the peerline conformance suite: the golden-vector check, plus the interop battery with one server and one client pairing against the Rust half.",
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^26.4.0",
+    "@types/ws": "^8.18.1",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.11",
+    "ws": "^8.21.3"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

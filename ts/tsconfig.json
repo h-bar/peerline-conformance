@@ -1,0 +1,33 @@
+// Typecheck-only. These files are run by `node` directly (which strips the
+// types), never compiled — nothing here is published or bundled.
+//
+// The compiler options mirror `ts/tsconfig.json` rather than being chosen
+// afresh: `battery.ts` type-imports from `ts/src`, so those sources get
+// pulled into this program and must be checked under the same settings they
+// were written for (notably `moduleResolution: bundler`, which the ts-rs
+// generated files depend on for their extensionless imports).
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "ESNext.Disposable", "DOM"],
+    "types": ["node"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "noEmit": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "verbatimModuleSyntax": true
+  },
+  // `battery.ts` only. `server.mjs` and `client.mjs` are deliberately outside
+  // the program: they take *values* from the built `ts/dist` (Node cannot load
+  // `ts/src`, whose files import each other with the `.js` specifiers tsc
+  // wants) while `battery.ts` takes *types* from `ts/src`. TypeScript treats
+  // the two `Peer` declarations as distinct nominal types because of their
+  // private fields, so checking the runners would report a mismatch that is
+  // an artifact of that split, not a real defect.
+  "include": ["battery.ts", "vectors.test.ts"]
+}

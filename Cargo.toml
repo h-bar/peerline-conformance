@@ -1,0 +1,27 @@
+# The peerline conformance suite.
+#
+# `vectors.json` is the contract: raw frame text plus the disposition every
+# peerline implementation must agree on. `rust/` and `ts/` each hold one
+# battery, one server and one client built on it, so a cross-language run is
+# one language's server paired with the other's client.
+#
+# Everything here is test scaffolding — nothing is published. The peerline
+# implementations it checks live in the sibling `peerline` repository; the
+# dependency arrow only ever points that way.
+[workspace]
+members = ["rust"]
+resolver = "2"
+
+[workspace.package]
+version = "0.0.6"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/h-bar/peerline-conformance"
+
+[workspace.dependencies]
+# The sibling implementation repo. Swap these for version requirements once
+# peerline is published to crates.io.
+peerline = { path = "../peerline/crates/peerline", features = ["runtime"] }
+peerline-transport-ws = { path = "../peerline/crates/peerline-transport-ws" }
+peerline-transport-uds = { path = "../peerline/crates/peerline-transport-uds" }
+peerline-transport-iroh = { path = "../peerline/crates/peerline-transport-iroh" }

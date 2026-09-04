@@ -1,0 +1,1059 @@
+[
+  {
+    "name": "req-with-args",
+    "frame": "{\"ver\":\"1\",\"kind\":\"req\",\"id\":7,\"op\":\"add\",\"args\":{\"a\":1,\"b\":2}}",
+    "expect": {
+      "valid": true,
+      "kind": "req",
+      "id": 7,
+      "op": "add",
+      "args": {
+        "a": 1,
+        "b": 2
+      }
+    }
+  },
+  {
+    "name": "req-no-args",
+    "frame": "{\"ver\":\"1\",\"kind\":\"req\",\"id\":1,\"op\":\"ping\"}",
+    "expect": {
+      "valid": true,
+      "kind": "req",
+      "id": 1,
+      "op": "ping",
+      "argsAbsent": true
+    }
+  },
+  {
+    "name": "req-empty-args",
+    "frame": "{\"ver\":\"1\",\"kind\":\"req\",\"id\":2,\"op\":\"ping\",\"args\":{}}",
+    "expect": {
+      "valid": true,
+      "kind": "req",
+      "id": 2,
+      "op": "ping",
+      "args": {}
+    }
+  },
+  {
+    "name": "req-id-zero",
+    "frame": "{\"ver\":\"1\",\"kind\":\"req\",\"id\":0,\"op\":\"ping\"}",
+    "expect": {
+      "valid": true,
+      "kind": "req",
+      "id": 0,
+      "op": "ping",
+      "argsAbsent": true
+    }
+  },
+  {
+    "name": "req-nested-args",
+    "frame": "{\"ver\":\"1\",\"kind\":\"req\",\"id\":3,\"op\":\"echo\",\"args\":{\"v\":[1,null,{\"k\":\"x\"}],\"t\":true}}",
+    "expect": {
+      "valid": true,
+      "kind": "req",
+      "id": 3,
+      "op": "echo",
+      "args": {
+        "v": [
+          1,
+          null,
+          {
+            "k": "x"
+          }
+        ],
+        "t": true
+      }
+    }
+  },
+  {
+    "name": "req-proto-op-and-args-key",
+    "frame": "{\"ver\":\"1\",\"kind\":\"req\",\"id\":4,\"op\":\"__proto__\",\"args\":{\"__proto__\":{\"polluted\":true}}}",
+    "expect": {
+      "valid": true,
+      "kind": "req",
+      "id": 4,
+      "op": "__proto__",
+      "args": {
+        "__proto__": {
+          "polluted": true
+        }
+      }
+    },
+    "note": "must parse without prototype pollution: JSON.parse makes __proto__ an own property, and args are never deep-merged"
+  },
+  {
+    "name": "req-args-null-reads-as-absent",
+    "frame": "{\"ver\":\"1\",\"kind\":\"req\",\"id\":5,\"op\":\"ping\",\"args\":null}",
+    "expect": {
+      "valid": true,
+      "kind": "req",
+      "id": 5,
+      "op": "ping",
+      "argsAbsent": true
+    },
+    "note": "args is a plain Option<T> on the Rust side: serde collapses JSON null to None"
+  },
+  {
+    "name": "req-err-null-reads-as-absent",
+    "frame": "{\"ver\":\"1\",\"kind\":\"req\",\"id\":6,\"op\":\"ping\",\"err\":null}",
+    "expect": {
+      "valid": true,
+      "kind": "req",
+      "id": 6,
+      "op": "ping",
+      "argsAbsent": true
+    },
+    "note": "same Option collapse — a null err is absent, so the forbidden-field rule doesn't fire"
+  },
+  {
+    "name": "req-seq-null-reads-as-absent",
+    "frame": "{\"ver\":\"1\",\"kind\":\"req\",\"id\":8,\"op\":\"ping\",\"seq\":null}",
+    "expect": {
+      "valid": true,
+      "kind": "req",
+      "id": 8,
+      "op": "ping",
+      "argsAbsent": true
+    }
+  },
+  {
+    "name": "resp-ok-number",
+    "frame": "{\"ver\":\"1\",\"kind\":\"resp\",\"id\":1,\"data\":42}",
+    "expect": {
+      "valid": true,
+      "kind": "resp-ok",
+      "id": 1,
+      "data": 42
+    }
+  },
+  {
+    "name": "resp-ok-null-data",
+    "frame": "{\"ver\":\"1\",\"kind\":\"resp\",\"id\":7,\"data\":null}",
+    "expect": {
+      "valid": true,
+      "kind": "resp-ok",
+      "id": 7,
+      "data": null
+    },
+    "note": "a present null payload is a unit result; an absent data key is a protocol error"
+  },
+  {
+    "name": "resp-ok-object-data",
+    "frame": "{\"ver\":\"1\",\"kind\":\"resp\",\"id\":2,\"data\":{\"sum\":3,\"tags\":[\"a\",\"b\"]}}",
+    "expect": {
+      "valid": true,
+      "kind": "resp-ok",
+      "id": 2,
+      "data": {
+        "sum": 3,
+        "tags": [
+          "a",
+          "b"
+        ]
+      }
+    }
+  },
+  {
+    "name": "resp-ok-false-data",
+    "frame": "{\"ver\":\"1\",\"kind\":\"resp\",\"id\":3,\"data\":false}",
+    "expect": {
+      "valid": true,
+      "kind": "resp-ok",
+      "id": 3,
+      "data": false
+    }
+  },
+  {
+    "name": "resp-ok-err-null-reads-as-absent",
+    "frame": "{\"ver\":\"1\",\"kind\":\"resp\",\"id\":4,\"data\":1,\"err\":null}",
+    "expect": {
+      "valid": true,
+      "kind": "resp-ok",
+      "id": 4,
+      "data": 1
+    },
+    "note": "null err collapses to absent, so this is a well-formed Ok response"
+  },
+  {
+    "name": "resp-ok-args-null-reads-as-absent",
+    "frame": "{\"ver\":\"1\",\"kind\":\"resp\",\"id\":5,\"data\":1,\"args\":null}",
+    "expect": {
+      "valid": true,
+      "kind": "resp-ok",
+      "id": 5,
+      "data": 1
+    }
+  },
+  {
+    "name": "resp-err-basic",
+    "frame": "{\"ver\":\"1\",\"kind\":\"resp\",\"id\":1,\"err\":{\"code\":-32000,\"msg\":\"boom\"}}",
+    "expect": {
+      "valid": true,
+      "kind": "resp-err",
+      "id": 1,
+      "err": {
+        "code": -32000,
+        "msg": "boom"
+      }
+    }
+  },
+  {
+    "name": "resp-err-id-null",
+    "frame": "{\"ver\":\"1\",\"kind\":\"resp\",\"id\":null,\"err\":{\"code\":-32600,\"msg\":\"invalid frame\"}}",
+    "expect": {
+      "valid": true,
+      "kind": "resp-err",
+      "id": null,
+      "err": {
+        "code": -32600,
+        "msg": "invalid frame"
+      }
+    },
+    "note": "the parse-error reply shape: the id key is required, its value may be null"
+  },
+  {
+    "name": "resp-err-with-data",
+    "frame": "{\"ver\":\"1\",\"kind\":\"resp\",\"id\":9,\"err\":{\"code\":-32001,\"msg\":\"boom\",\"data\":{\"sentry\":\"abcd\"}}}",
+    "expect": {
+      "valid": true,
+      "kind": "resp-err",
+      "id": 9,
+      "err": {
+        "code": -32001,
+        "msg": "boom",
+        "data": {
+          "sentry": "abcd"
+        }
+      }
+    },
+    "note": "error data is forwarded verbatim by both implementations"
+  },
+  {
+    "name": "resp-err-extra-keys-in-err",
+    "frame": "{\"ver\":\"1\",\"kind\":\"resp\",\"id\":10,\"err\":{\"code\":-1,\"msg\":\"x\",\"extra\":true}}",
+    "expect": {
+      "valid": true,
+      "kind": "resp-err",
+      "id": 10,
+      "err": {
+        "code": -1,
+        "msg": "x"
+      }
+    },
+    "note": "RpcError has no deny_unknown_fields: extra members are tolerated and dropped"
+  },
+  {
+    "name": "resp-err-data-null-reads-as-absent",
+    "frame": "{\"ver\":\"1\",\"kind\":\"resp\",\"id\":11,\"err\":{\"code\":-1,\"msg\":\"x\",\"data\":null}}",
+    "expect": {
+      "valid": true,
+      "kind": "resp-err",
+      "id": 11,
+      "err": {
+        "code": -1,
+        "msg": "x"
+      }
+    },
+    "note": "RpcError.data is a plain Option<Value>: null collapses to absent"
+  },
+  {
+    "name": "resp-err-application-code",
+    "frame": "{\"ver\":\"1\",\"kind\":\"resp\",\"id\":12,\"err\":{\"code\":-32050,\"msg\":\"app failure\"}}",
+    "expect": {
+      "valid": true,
+      "kind": "resp-err",
+      "id": 12,
+      "err": {
+        "code": -32050,
+        "msg": "app failure"
+      }
+    }
+  },
+  {
+    "name": "notif-with-args",
+    "frame": "{\"ver\":\"1\",\"kind\":\"notif\",\"op\":\"event\",\"args\":{\"subscription_id\":\"sub-0\",\"event\":{\"k\":\"v\"}}}",
+    "expect": {
+      "valid": true,
+      "kind": "notif",
+      "op": "event",
+      "args": {
+        "subscription_id": "sub-0",
+        "event": {
+          "k": "v"
+        }
+      }
+    }
+  },
+  {
+    "name": "notif-no-args",
+    "frame": "{\"ver\":\"1\",\"kind\":\"notif\",\"op\":\"ping\"}",
+    "expect": {
+      "valid": true,
+      "kind": "notif",
+      "op": "ping",
+      "argsAbsent": true
+    }
+  },
+  {
+    "name": "notif-empty-args",
+    "frame": "{\"ver\":\"1\",\"kind\":\"notif\",\"op\":\"ping\",\"args\":{}}",
+    "expect": {
+      "valid": true,
+      "kind": "notif",
+      "op": "ping",
+      "args": {}
+    }
+  },
+  {
+    "name": "notif-cancel-op",
+    "frame": "{\"ver\":\"1\",\"kind\":\"notif\",\"op\":\"$peerline/stream.cancel\",\"args\":{\"id\":7}}",
+    "expect": {
+      "valid": true,
+      "kind": "notif",
+      "op": "$peerline/stream.cancel",
+      "args": {
+        "id": 7
+      }
+    }
+  },
+  {
+    "name": "notif-seq-null-reads-as-absent",
+    "frame": "{\"ver\":\"1\",\"kind\":\"notif\",\"op\":\"ping\",\"seq\":null}",
+    "expect": {
+      "valid": true,
+      "kind": "notif",
+      "op": "ping",
+      "argsAbsent": true
+    }
+  },
+  {
+    "name": "stream-item-first",
+    "frame": "{\"ver\":\"1\",\"kind\":\"stream\",\"id\":7,\"seq\":0,\"data\":{\"chunk\":1}}",
+    "expect": {
+      "valid": true,
+      "kind": "stream",
+      "id": 7,
+      "seq": 0,
+      "data": {
+        "chunk": 1
+      },
+      "errAbsent": true
+    }
+  },
+  {
+    "name": "stream-item-later-seq",
+    "frame": "{\"ver\":\"1\",\"kind\":\"stream\",\"id\":7,\"seq\":42,\"data\":[1,2,3]}",
+    "expect": {
+      "valid": true,
+      "kind": "stream",
+      "id": 7,
+      "seq": 42,
+      "data": [
+        1,
+        2,
+        3
+      ],
+      "errAbsent": true
+    }
+  },
+  {
+    "name": "stream-item-no-payload",
+    "frame": "{\"ver\":\"1\",\"kind\":\"stream\",\"id\":7,\"seq\":2}",
+    "expect": {
+      "valid": true,
+      "kind": "stream",
+      "id": 7,
+      "seq": 2,
+      "dataAbsent": true,
+      "errAbsent": true
+    },
+    "note": "well-formed but carries nothing; the receiver skips it"
+  },
+  {
+    "name": "stream-terminal-empty",
+    "frame": "{\"ver\":\"1\",\"kind\":\"stream\",\"id\":7,\"seq\":-1}",
+    "expect": {
+      "valid": true,
+      "kind": "stream",
+      "id": 7,
+      "seq": -1,
+      "dataAbsent": true,
+      "errAbsent": true
+    }
+  },
+  {
+    "name": "stream-terminal-with-data",
+    "frame": "{\"ver\":\"1\",\"kind\":\"stream\",\"id\":7,\"seq\":-1,\"data\":{\"final\":true}}",
+    "expect": {
+      "valid": true,
+      "kind": "stream",
+      "id": 7,
+      "seq": -1,
+      "data": {
+        "final": true
+      },
+      "errAbsent": true
+    }
+  },
+  {
+    "name": "stream-terminal-data-null",
+    "frame": "{\"ver\":\"1\",\"kind\":\"stream\",\"id\":7,\"seq\":-1,\"data\":null}",
+    "expect": {
+      "valid": true,
+      "kind": "stream",
+      "id": 7,
+      "seq": -1,
+      "data": null,
+      "errAbsent": true
+    },
+    "note": "present null bundled item — distinct from the empty terminal above"
+  },
+  {
+    "name": "stream-terminal-with-error",
+    "frame": "{\"ver\":\"1\",\"kind\":\"stream\",\"id\":7,\"seq\":-1,\"err\":{\"code\":-32000,\"msg\":\"boom\"}}",
+    "expect": {
+      "valid": true,
+      "kind": "stream",
+      "id": 7,
+      "seq": -1,
+      "dataAbsent": true,
+      "err": {
+        "code": -32000,
+        "msg": "boom"
+      }
+    }
+  },
+  {
+    "name": "stream-terminal-with-error-data",
+    "frame": "{\"ver\":\"1\",\"kind\":\"stream\",\"id\":7,\"seq\":-1,\"err\":{\"code\":-32001,\"msg\":\"boom\",\"data\":[1,2]}}",
+    "expect": {
+      "valid": true,
+      "kind": "stream",
+      "id": 7,
+      "seq": -1,
+      "dataAbsent": true,
+      "err": {
+        "code": -32001,
+        "msg": "boom",
+        "data": [
+          1,
+          2
+        ]
+      }
+    }
+  },
+  {
+    "name": "stream-terminal-err-and-data",
+    "frame": "{\"ver\":\"1\",\"kind\":\"stream\",\"id\":7,\"seq\":-1,\"err\":{\"code\":-1,\"msg\":\"x\"},\"data\":5}",
+    "expect": {
+      "valid": true,
+      "kind": "stream",
+      "id": 7,
+      "seq": -1,
+      "data": 5,
+      "err": {
+        "code": -1,
+        "msg": "x"
+      }
+    },
+    "note": "a legal frame; the receiver lets the error win and discards the bundled data"
+  },
+  {
+    "name": "stream-error-on-non-terminal-seq",
+    "frame": "{\"ver\":\"1\",\"kind\":\"stream\",\"id\":7,\"seq\":3,\"err\":{\"code\":-1,\"msg\":\"x\"}}",
+    "expect": {
+      "valid": true,
+      "kind": "stream",
+      "id": 7,
+      "seq": 3,
+      "dataAbsent": true,
+      "err": {
+        "code": -1,
+        "msg": "x"
+      }
+    },
+    "note": "any err-bearing frame is terminal regardless of seq"
+  },
+  {
+    "name": "stream-op-null-reads-as-absent",
+    "frame": "{\"ver\":\"1\",\"kind\":\"stream\",\"id\":7,\"seq\":0,\"data\":1,\"op\":null}",
+    "expect": {
+      "valid": true,
+      "kind": "stream",
+      "id": 7,
+      "seq": 0,
+      "data": 1,
+      "errAbsent": true
+    }
+  },
+  {
+    "name": "bad-json-garbage",
+    "frame": "not json",
+    "expect": {
+      "valid": false,
+      "category": "bad-json"
+    }
+  },
+  {
+    "name": "bad-json-truncated",
+    "frame": "{\"ver\":\"1\",\"kind\":\"req\"",
+    "expect": {
+      "valid": false,
+      "category": "bad-json"
+    }
+  },
+  {
+    "name": "bad-json-trailing-comma",
+    "frame": "{\"ver\":\"1\",\"kind\":\"notif\",\"op\":\"x\",}",
+    "expect": {
+      "valid": false,
+      "category": "bad-json"
+    }
+  },
+  {
+    "name": "frame-empty-array",
+    "frame": "[]",
+    "expect": {
+      "valid": false,
+      "category": "not-object"
+    },
+    "note": "batching is a transport concern; the wire parser takes one frame at a time"
+  },
+  {
+    "name": "frame-array-of-frames",
+    "frame": "[{\"ver\":\"1\",\"kind\":\"req\",\"id\":1,\"op\":\"a\"}]",
+    "expect": {
+      "valid": false,
+      "category": "not-object"
+    }
+  },
+  {
+    "name": "frame-scalar-number",
+    "frame": "42",
+    "expect": {
+      "valid": false,
+      "category": "not-object"
+    }
+  },
+  {
+    "name": "frame-scalar-string",
+    "frame": "\"hi\"",
+    "expect": {
+      "valid": false,
+      "category": "not-object"
+    }
+  },
+  {
+    "name": "frame-scalar-null",
+    "frame": "null",
+    "expect": {
+      "valid": false,
+      "category": "not-object"
+    }
+  },
+  {
+    "name": "missing-ver",
+    "frame": "{\"kind\":\"req\",\"id\":1,\"op\":\"x\"}",
+    "expect": {
+      "valid": false,
+      "category": "missing-field"
+    }
+  },
+  {
+    "name": "bad-ver-2",
+    "frame": "{\"ver\":\"2\",\"kind\":\"req\",\"id\":1,\"op\":\"x\"}",
+    "expect": {
+      "valid": false,
+      "category": "bad-version"
+    }
+  },
+  {
+    "name": "bad-ver-999",
+    "frame": "{\"ver\":\"999\",\"kind\":\"req\",\"id\":1,\"op\":\"x\"}",
+    "expect": {
+      "valid": false,
+      "category": "bad-version"
+    }
+  },
+  {
+    "name": "bad-ver-number",
+    "frame": "{\"ver\":1,\"kind\":\"req\",\"id\":1,\"op\":\"x\"}",
+    "expect": {
+      "valid": false,
+      "category": "bad-version"
+    }
+  },
+  {
+    "name": "bad-ver-null",
+    "frame": "{\"ver\":null,\"kind\":\"req\",\"id\":1,\"op\":\"x\"}",
+    "expect": {
+      "valid": false,
+      "category": "bad-version"
+    }
+  },
+  {
+    "name": "missing-kind",
+    "frame": "{\"ver\":\"1\",\"id\":1,\"op\":\"x\"}",
+    "expect": {
+      "valid": false,
+      "category": "missing-field"
+    }
+  },
+  {
+    "name": "unknown-kind",
+    "frame": "{\"ver\":\"1\",\"kind\":\"unknown\",\"id\":1}",
+    "expect": {
+      "valid": false,
+      "category": "bad-kind"
+    }
+  },
+  {
+    "name": "bad-kind-number",
+    "frame": "{\"ver\":\"1\",\"kind\":3,\"id\":1}",
+    "expect": {
+      "valid": false,
+      "category": "bad-kind"
+    }
+  },
+  {
+    "name": "unknown-key-on-req",
+    "frame": "{\"ver\":\"1\",\"kind\":\"req\",\"id\":1,\"op\":\"x\",\"stray\":\"v\"}",
+    "expect": {
+      "valid": false,
+      "category": "unknown-field"
+    }
+  },
+  {
+    "name": "unknown-key-on-stream",
+    "frame": "{\"ver\":\"1\",\"kind\":\"stream\",\"id\":1,\"seq\":1,\"data\":1,\"surprise\":42}",
+    "expect": {
+      "valid": false,
+      "category": "unknown-field"
+    }
+  },
+  {
+    "name": "unknown-key-null-value",
+    "frame": "{\"ver\":\"1\",\"kind\":\"notif\",\"op\":\"x\",\"stray\":null}",
+    "expect": {
+      "valid": false,
+      "category": "unknown-field"
+    },
+    "note": "deny_unknown_fields fires on the key, whatever its value"
+  },
+  {
+    "name": "req-with-seq",
+    "frame": "{\"ver\":\"1\",\"kind\":\"req\",\"id\":1,\"op\":\"x\",\"seq\":0}",
+    "expect": {
+      "valid": false,
+      "category": "forbidden-field"
+    }
+  },
+  {
+    "name": "req-with-data",
+    "frame": "{\"ver\":\"1\",\"kind\":\"req\",\"id\":1,\"op\":\"x\",\"data\":1}",
+    "expect": {
+      "valid": false,
+      "category": "forbidden-field"
+    }
+  },
+  {
+    "name": "req-with-data-null",
+    "frame": "{\"ver\":\"1\",\"kind\":\"req\",\"id\":1,\"op\":\"x\",\"data\":null}",
+    "expect": {
+      "valid": false,
+      "category": "forbidden-field"
+    },
+    "note": "data is presence-sensitive: even a null value counts as carried"
+  },
+  {
+    "name": "req-with-err",
+    "frame": "{\"ver\":\"1\",\"kind\":\"req\",\"id\":1,\"op\":\"x\",\"err\":{\"code\":-1,\"msg\":\"x\"}}",
+    "expect": {
+      "valid": false,
+      "category": "forbidden-field"
+    }
+  },
+  {
+    "name": "notif-with-id",
+    "frame": "{\"ver\":\"1\",\"kind\":\"notif\",\"op\":\"x\",\"id\":1}",
+    "expect": {
+      "valid": false,
+      "category": "forbidden-field"
+    }
+  },
+  {
+    "name": "notif-with-id-null",
+    "frame": "{\"ver\":\"1\",\"kind\":\"notif\",\"op\":\"x\",\"id\":null}",
+    "expect": {
+      "valid": false,
+      "category": "forbidden-field"
+    },
+    "note": "id is presence-sensitive too — a null id is still an id key"
+  },
+  {
+    "name": "notif-with-seq",
+    "frame": "{\"ver\":\"1\",\"kind\":\"notif\",\"op\":\"x\",\"seq\":1}",
+    "expect": {
+      "valid": false,
+      "category": "forbidden-field"
+    }
+  },
+  {
+    "name": "notif-with-data",
+    "frame": "{\"ver\":\"1\",\"kind\":\"notif\",\"op\":\"x\",\"data\":1}",
+    "expect": {
+      "valid": false,
+      "category": "forbidden-field"
+    }
+  },
+  {
+    "name": "notif-with-err",
+    "frame": "{\"ver\":\"1\",\"kind\":\"notif\",\"op\":\"x\",\"err\":{\"code\":-1,\"msg\":\"y\"}}",
+    "expect": {
+      "valid": false,
+      "category": "forbidden-field"
+    }
+  },
+  {
+    "name": "resp-with-op",
+    "frame": "{\"ver\":\"1\",\"kind\":\"resp\",\"id\":1,\"data\":1,\"op\":\"x\"}",
+    "expect": {
+      "valid": false,
+      "category": "forbidden-field"
+    }
+  },
+  {
+    "name": "resp-with-seq",
+    "frame": "{\"ver\":\"1\",\"kind\":\"resp\",\"id\":1,\"data\":1,\"seq\":0}",
+    "expect": {
+      "valid": false,
+      "category": "forbidden-field"
+    }
+  },
+  {
+    "name": "resp-with-args",
+    "frame": "{\"ver\":\"1\",\"kind\":\"resp\",\"id\":1,\"data\":1,\"args\":{\"a\":1}}",
+    "expect": {
+      "valid": false,
+      "category": "forbidden-field"
+    }
+  },
+  {
+    "name": "stream-with-op",
+    "frame": "{\"ver\":\"1\",\"kind\":\"stream\",\"id\":1,\"seq\":0,\"data\":1,\"op\":\"x\"}",
+    "expect": {
+      "valid": false,
+      "category": "forbidden-field"
+    }
+  },
+  {
+    "name": "stream-with-args",
+    "frame": "{\"ver\":\"1\",\"kind\":\"stream\",\"id\":1,\"seq\":0,\"args\":{\"a\":1}}",
+    "expect": {
+      "valid": false,
+      "category": "forbidden-field"
+    }
+  },
+  {
+    "name": "req-missing-op",
+    "frame": "{\"ver\":\"1\",\"kind\":\"req\",\"id\":1}",
+    "expect": {
+      "valid": false,
+      "category": "missing-field"
+    }
+  },
+  {
+    "name": "req-op-null",
+    "frame": "{\"ver\":\"1\",\"kind\":\"req\",\"id\":1,\"op\":null}",
+    "expect": {
+      "valid": false,
+      "category": "missing-field"
+    }
+  },
+  {
+    "name": "notif-missing-op",
+    "frame": "{\"ver\":\"1\",\"kind\":\"notif\"}",
+    "expect": {
+      "valid": false,
+      "category": "missing-field"
+    }
+  },
+  {
+    "name": "stream-missing-seq",
+    "frame": "{\"ver\":\"1\",\"kind\":\"stream\",\"id\":1,\"data\":42}",
+    "expect": {
+      "valid": false,
+      "category": "missing-field"
+    }
+  },
+  {
+    "name": "stream-seq-null",
+    "frame": "{\"ver\":\"1\",\"kind\":\"stream\",\"id\":1,\"seq\":null}",
+    "expect": {
+      "valid": false,
+      "category": "missing-field"
+    }
+  },
+  {
+    "name": "req-op-number",
+    "frame": "{\"ver\":\"1\",\"kind\":\"req\",\"id\":1,\"op\":5}",
+    "expect": {
+      "valid": false,
+      "category": "bad-op"
+    }
+  },
+  {
+    "name": "notif-op-object",
+    "frame": "{\"ver\":\"1\",\"kind\":\"notif\",\"op\":{\"a\":1}}",
+    "expect": {
+      "valid": false,
+      "category": "bad-op"
+    }
+  },
+  {
+    "name": "req-missing-id",
+    "frame": "{\"ver\":\"1\",\"kind\":\"req\",\"op\":\"x\"}",
+    "expect": {
+      "valid": false,
+      "category": "bad-id"
+    }
+  },
+  {
+    "name": "req-id-null",
+    "frame": "{\"ver\":\"1\",\"kind\":\"req\",\"id\":null,\"op\":\"x\"}",
+    "expect": {
+      "valid": false,
+      "category": "bad-id"
+    }
+  },
+  {
+    "name": "req-id-negative",
+    "frame": "{\"ver\":\"1\",\"kind\":\"req\",\"id\":-1,\"op\":\"x\"}",
+    "expect": {
+      "valid": false,
+      "category": "bad-id"
+    }
+  },
+  {
+    "name": "req-id-fractional",
+    "frame": "{\"ver\":\"1\",\"kind\":\"req\",\"id\":1.5,\"op\":\"x\"}",
+    "expect": {
+      "valid": false,
+      "category": "bad-id"
+    }
+  },
+  {
+    "name": "req-id-string",
+    "frame": "{\"ver\":\"1\",\"kind\":\"req\",\"id\":\"1\",\"op\":\"x\"}",
+    "expect": {
+      "valid": false,
+      "category": "bad-id"
+    }
+  },
+  {
+    "name": "resp-ok-id-null",
+    "frame": "{\"ver\":\"1\",\"kind\":\"resp\",\"id\":null,\"data\":1}",
+    "expect": {
+      "valid": false,
+      "category": "bad-id"
+    },
+    "note": "a success reply always knows its id"
+  },
+  {
+    "name": "resp-ok-missing-id",
+    "frame": "{\"ver\":\"1\",\"kind\":\"resp\",\"data\":1}",
+    "expect": {
+      "valid": false,
+      "category": "bad-id"
+    }
+  },
+  {
+    "name": "resp-err-missing-id",
+    "frame": "{\"ver\":\"1\",\"kind\":\"resp\",\"err\":{\"code\":-1,\"msg\":\"x\"}}",
+    "expect": {
+      "valid": false,
+      "category": "bad-id"
+    },
+    "note": "an error reply may carry id:null, but the key itself is required"
+  },
+  {
+    "name": "stream-id-null",
+    "frame": "{\"ver\":\"1\",\"kind\":\"stream\",\"id\":null,\"seq\":0,\"data\":1}",
+    "expect": {
+      "valid": false,
+      "category": "bad-id"
+    }
+  },
+  {
+    "name": "stream-missing-id",
+    "frame": "{\"ver\":\"1\",\"kind\":\"stream\",\"seq\":0,\"data\":1}",
+    "expect": {
+      "valid": false,
+      "category": "bad-id"
+    }
+  },
+  {
+    "name": "stream-seq-fractional",
+    "frame": "{\"ver\":\"1\",\"kind\":\"stream\",\"id\":1,\"seq\":1.5}",
+    "expect": {
+      "valid": false,
+      "category": "bad-seq"
+    }
+  },
+  {
+    "name": "stream-seq-string",
+    "frame": "{\"ver\":\"1\",\"kind\":\"stream\",\"id\":1,\"seq\":\"0\"}",
+    "expect": {
+      "valid": false,
+      "category": "bad-seq"
+    }
+  },
+  {
+    "name": "stream-seq-bool",
+    "frame": "{\"ver\":\"1\",\"kind\":\"stream\",\"id\":1,\"seq\":true}",
+    "expect": {
+      "valid": false,
+      "category": "bad-seq"
+    }
+  },
+  {
+    "name": "req-args-array",
+    "frame": "{\"ver\":\"1\",\"kind\":\"req\",\"id\":1,\"op\":\"x\",\"args\":[1,2]}",
+    "expect": {
+      "valid": false,
+      "category": "bad-args"
+    }
+  },
+  {
+    "name": "req-args-string",
+    "frame": "{\"ver\":\"1\",\"kind\":\"req\",\"id\":1,\"op\":\"x\",\"args\":\"bare\"}",
+    "expect": {
+      "valid": false,
+      "category": "bad-args"
+    }
+  },
+  {
+    "name": "notif-args-array",
+    "frame": "{\"ver\":\"1\",\"kind\":\"notif\",\"op\":\"x\",\"args\":[]}",
+    "expect": {
+      "valid": false,
+      "category": "bad-args"
+    }
+  },
+  {
+    "name": "notif-args-number",
+    "frame": "{\"ver\":\"1\",\"kind\":\"notif\",\"op\":\"x\",\"args\":3}",
+    "expect": {
+      "valid": false,
+      "category": "bad-args"
+    }
+  },
+  {
+    "name": "resp-err-not-object",
+    "frame": "{\"ver\":\"1\",\"kind\":\"resp\",\"id\":1,\"err\":5}",
+    "expect": {
+      "valid": false,
+      "category": "bad-err"
+    }
+  },
+  {
+    "name": "resp-err-array",
+    "frame": "{\"ver\":\"1\",\"kind\":\"resp\",\"id\":1,\"err\":[]}",
+    "expect": {
+      "valid": false,
+      "category": "bad-err"
+    }
+  },
+  {
+    "name": "resp-err-missing-msg",
+    "frame": "{\"ver\":\"1\",\"kind\":\"resp\",\"id\":1,\"err\":{\"code\":-1}}",
+    "expect": {
+      "valid": false,
+      "category": "bad-err"
+    }
+  },
+  {
+    "name": "resp-err-missing-code",
+    "frame": "{\"ver\":\"1\",\"kind\":\"resp\",\"id\":1,\"err\":{\"msg\":\"x\"}}",
+    "expect": {
+      "valid": false,
+      "category": "bad-err"
+    }
+  },
+  {
+    "name": "resp-err-code-fractional",
+    "frame": "{\"ver\":\"1\",\"kind\":\"resp\",\"id\":1,\"err\":{\"code\":1.5,\"msg\":\"x\"}}",
+    "expect": {
+      "valid": false,
+      "category": "bad-err"
+    }
+  },
+  {
+    "name": "resp-err-code-above-i32",
+    "frame": "{\"ver\":\"1\",\"kind\":\"resp\",\"id\":1,\"err\":{\"code\":3000000000,\"msg\":\"x\"}}",
+    "expect": {
+      "valid": false,
+      "category": "bad-err"
+    },
+    "note": "code is an i32 on the Rust side"
+  },
+  {
+    "name": "resp-err-msg-number",
+    "frame": "{\"ver\":\"1\",\"kind\":\"resp\",\"id\":1,\"err\":{\"code\":-1,\"msg\":5}}",
+    "expect": {
+      "valid": false,
+      "category": "bad-err"
+    }
+  },
+  {
+    "name": "stream-err-missing-msg",
+    "frame": "{\"ver\":\"1\",\"kind\":\"stream\",\"id\":1,\"seq\":-1,\"err\":{\"code\":-1}}",
+    "expect": {
+      "valid": false,
+      "category": "bad-err"
+    }
+  },
+  {
+    "name": "resp-both-data-and-err",
+    "frame": "{\"ver\":\"1\",\"kind\":\"resp\",\"id\":1,\"data\":\"v\",\"err\":{\"code\":-1,\"msg\":\"x\"}}",
+    "expect": {
+      "valid": false,
+      "category": "resp-shape"
+    }
+  },
+  {
+    "name": "resp-neither-data-nor-err",
+    "frame": "{\"ver\":\"1\",\"kind\":\"resp\",\"id\":1}",
+    "expect": {
+      "valid": false,
+      "category": "resp-shape"
+    }
+  },
+  {
+    "name": "resp-neither-with-id-null",
+    "frame": "{\"ver\":\"1\",\"kind\":\"resp\",\"id\":null}",
+    "expect": {
+      "valid": false,
+      "category": "resp-shape"
+    }
+  },
+  {
+    "name": "req-id-above-2p53",
+    "frame": "{\"ver\":\"1\",\"kind\":\"req\",\"id\":9007199254740993,\"op\":\"x\"}",
+    "expect": {
+      "valid": false,
+      "category": "bad-id"
+    },
+    "tsOnly": true
+  },
+  {
+    "name": "stream-id-u64-max",
+    "frame": "{\"ver\":\"1\",\"kind\":\"stream\",\"id\":18446744073709551615,\"seq\":0,\"data\":1}",
+    "expect": {
+      "valid": false,
+      "category": "bad-id"
+    },
+    "tsOnly": true
+  }
+]

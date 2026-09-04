@@ -1,0 +1,6 @@
+/target
+# Belt and braces: ts/ ignores its own too, but a directory being removed
+# must not un-ignore what is left behind.
+node_modules/
+**/*.rs.bk
+.DS_Store
