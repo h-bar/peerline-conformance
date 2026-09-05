@@ -286,6 +286,22 @@
     }
   },
   {
+    "name": "pubsub-event-notif",
+    "frame": "{\"ver\":\"1\",\"kind\":\"notif\",\"op\":\"$peerline/pubsub.event\",\"args\":{\"subscription_id\":\"sub-0\",\"event\":{\"k\":\"v\"}}}",
+    "expect": {
+      "valid": true,
+      "kind": "notif",
+      "op": "$peerline/pubsub.event",
+      "args": {
+        "subscription_id": "sub-0",
+        "event": {
+          "k": "v"
+        }
+      }
+    },
+    "note": "the renamed pubsub delivery op; its former bare `event` name (see notif-with-args) is now an ordinary application op"
+  },
+  {
     "name": "notif-no-args",
     "frame": "{\"ver\":\"1\",\"kind\":\"notif\",\"op\":\"ping\"}",
     "expect": {
