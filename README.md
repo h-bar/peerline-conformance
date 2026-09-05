@@ -1,5 +1,8 @@
 # peerline-conformance
 
+[![CI](https://github.com/h-bar/peerline-conformance/actions/workflows/ci.yml/badge.svg)](https://github.com/h-bar/peerline-conformance/actions/workflows/ci.yml)
+[![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 The conformance suite for peerline — what makes "two implementations of one
 protocol" a checked claim rather than an aspiration.
 
