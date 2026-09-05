@@ -33,7 +33,13 @@ async fn main() -> Result<(), String> {
     let addr: SocketAddr = probe.local_addr().map_err(|e| e.to_string())?;
     drop(probe);
 
-    let serving = tokio::spawn(async move { peerline_transport_ws::serve(addr, register).await });
+    let serving = tokio::spawn(async move {
+        peerline_transport_ws::serve(
+            addr,
+            peerline_transport_ws::WsPolicy::allow_any().acceptor(register),
+        )
+        .await
+    });
 
     // Announce only once a TCP connection actually succeeds, so a client
     // that dials the moment it reads the line can't lose the race.

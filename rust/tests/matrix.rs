@@ -59,10 +59,12 @@ fn tmp(ext: &str) -> PathBuf {
     ))
 }
 
-async fn dial_retry<F, Fut>(mut dial: F) -> Result<Connected, String>
+// Generic over the dial error: WS and iroh return their own `ConnectError`,
+// UDS a `String`; retries discard it either way.
+async fn dial_retry<F, Fut, E>(mut dial: F) -> Result<Connected, String>
 where
     F: FnMut() -> Fut,
-    Fut: std::future::Future<Output = Result<Connected, String>>,
+    Fut: std::future::Future<Output = Result<Connected, E>>,
 {
     for _ in 0..300 {
         if let Ok(c) = dial().await {
@@ -117,7 +119,11 @@ impl Harness for Uds {
             let path = tmp("sock");
             let p = path.clone();
             tokio::spawn(async move {
-                let _ = peerline_transport_uds::serve(&p, move |peer| reg(peer)).await;
+                let _ = peerline_transport_uds::serve(
+                    &p,
+                    peerline_transport_uds::UdsPolicy::allow_any().acceptor(move |peer| reg(peer)),
+                )
+                .await;
             });
             Ok(Box::new(UdsEp { path }) as Box<dyn Endpoint>)
         })
@@ -144,7 +150,11 @@ impl Harness for Ws {
         Box::pin(async move {
             let addr = free_addr().await?;
             tokio::spawn(async move {
-                let _ = peerline_transport_ws::serve(addr, move |peer| reg(peer)).await;
+                let _ = peerline_transport_ws::serve(
+                    addr,
+                    peerline_transport_ws::WsPolicy::allow_any().acceptor(move |peer| reg(peer)),
+                )
+                .await;
             });
             Ok(Box::new(WsEp {
                 url: format!("ws://{addr}"),
@@ -192,7 +202,8 @@ impl Harness for Iroh {
                     move |t| {
                         let _ = tx.send(t.to_string());
                     },
-                    move |peer| reg(peer),
+                    peerline_transport_iroh::IrohPolicy::any_ticket_holder()
+                        .acceptor(move |peer| reg(peer)),
                 )
                 .await;
             });

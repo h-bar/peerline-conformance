@@ -34,7 +34,7 @@ async fn main() -> Result<(), String> {
                 break;
             }
             Err(e) => {
-                last = e;
+                last = e.to_string();
                 tokio::time::sleep(Duration::from_millis(50)).await;
             }
         }

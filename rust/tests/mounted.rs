@@ -21,22 +21,23 @@ struct EchoArgs {
 }
 
 /// A mount whose `echo` prefixes its own tag, so the reply names the service
-/// that answered.
+/// that answered. Admission stays wide open (`allow_any` per transport):
+/// routing, not screening, is what this file tests.
 macro_rules! tagged_mount {
-    ($handler_ty:ty, $tag:expr) => {{
+    ($acceptor_ty:ty, $policy:expr, $tag:expr) => {{
         let tag: &'static str = $tag;
-        let h: $handler_ty = Arc::new(move |peer: &Peer| {
+        let a: $acceptor_ty = Arc::new($policy.acceptor(move |peer: &Peer| {
             peer.on_request("echo", move |a: EchoArgs| async move {
                 Ok::<_, RpcError>(format!("{tag}:{}", a.s))
             });
-        });
-        h
+        }));
+        a
     }};
 }
 
 #[tokio::test]
 async fn ws_mounted_paths_route_to_distinct_services() {
-    use peerline_transport_ws::{PeerHandler, connect, serve_mounted};
+    use peerline_transport_ws::{Acceptor, WsPolicy, connect, serve_mounted};
 
     // Take a port from the OS, then hand the same address to the server. The
     // drop-to-rebind window is covered by the dial retry below.
@@ -50,8 +51,8 @@ async fn ws_mounted_paths_route_to_distinct_services() {
         serve_mounted(
             addr,
             vec![
-                ("/a".into(), tagged_mount!(PeerHandler, "A")),
-                ("/b".into(), tagged_mount!(PeerHandler, "B")),
+                ("/a".into(), tagged_mount!(Acceptor, WsPolicy::allow_any(), "A")),
+                ("/b".into(), tagged_mount!(Acceptor, WsPolicy::allow_any(), "B")),
             ],
         )
         .await
@@ -92,7 +93,7 @@ async fn ws_mounted_paths_route_to_distinct_services() {
 
 #[tokio::test]
 async fn uds_mounted_sockets_route_to_distinct_services() {
-    use peerline_transport_uds::{PeerHandler, connect, serve_mounted};
+    use peerline_transport_uds::{Acceptor, UdsPolicy, connect, serve_mounted};
 
     let dir = std::env::temp_dir();
     let pid = std::process::id();
@@ -102,8 +103,8 @@ async fn uds_mounted_sockets_route_to_distinct_services() {
     let (sa, sb) = (path_a.clone(), path_b.clone());
     let server = tokio::spawn(async move {
         serve_mounted(vec![
-            (sa, tagged_mount!(PeerHandler, "A")),
-            (sb, tagged_mount!(PeerHandler, "B")),
+            (sa, tagged_mount!(Acceptor, UdsPolicy::allow_any(), "A")),
+            (sb, tagged_mount!(Acceptor, UdsPolicy::allow_any(), "B")),
         ])
         .await
         .expect("serve_mounted");
