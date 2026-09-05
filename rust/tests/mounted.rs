@@ -51,8 +51,14 @@ async fn ws_mounted_paths_route_to_distinct_services() {
         serve_mounted(
             addr,
             vec![
-                ("/a".into(), tagged_mount!(Acceptor, WsPolicy::allow_any(), "A")),
-                ("/b".into(), tagged_mount!(Acceptor, WsPolicy::allow_any(), "B")),
+                (
+                    "/a".into(),
+                    tagged_mount!(Acceptor, WsPolicy::allow_any(), "A"),
+                ),
+                (
+                    "/b".into(),
+                    tagged_mount!(Acceptor, WsPolicy::allow_any(), "B"),
+                ),
             ],
         )
         .await

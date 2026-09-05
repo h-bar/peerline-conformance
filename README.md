@@ -14,14 +14,14 @@ and a live battery that pins the *runtimes*.
 Everything here is test scaffolding, and nothing is published.
 
 ```
-vectors.json     the contract: 107 frames as raw text, plus the disposition
+vectors.json     the contract: golden frames as raw text, plus the disposition
 rust/            one battery, one server, one client — the Rust half
 ts/              one battery, one server, one client — the TypeScript half
 ```
 
 ## The static half: golden vectors
 
-`vectors.json` holds 107 entries. Each is a frame **as text** plus the
+`vectors.json` holds 108 entries. Each is a frame **as text** plus the
 disposition both implementations must agree on:
 
 ```jsonc
@@ -32,7 +32,7 @@ disposition both implementations must agree on:
 }
 ```
 
-**37 accept, 70 reject.** The reject majority is the point — compatibility is
+**38 accept, 70 reject.** The reject majority is the point — compatibility is
 mostly about refusing the same things. The set covers `bad-ver-2`,
 `unknown-key-on-req`, `notif-with-id`, `resp-both-data-and-err`,
 `req-id-fractional`, `stream-seq-string`, `resp-err-code-above-i32` and so on.
@@ -105,16 +105,19 @@ libs/
 ```
 
 ```sh
-just              # vectors + bindings + interop
+just              # vectors + bindings-check + interop
 just vectors      # the golden vectors, both languages
 just bindings-check  # the generated wire types match the Rust source
+just bindings     # regenerate the bindings in ../peerline-ts
 just matrix       # the battery against every transport
 just interop      # the cross-language battery, both directions
 ```
 
 The Rust side is a normal cargo workspace. The TypeScript side is a private
-package with one dependency (`ws` — Node has no built-in WebSocket *server*);
-`pnpm install --dir ts` before the first run.
+package with one runtime dependency (`ws` — Node has no built-in WebSocket
+*server*); `pnpm install --dir ts` before the first run. `just vectors-ts` and
+`just interop` also import and build the sibling `peerline-ts` sources, so run
+`pnpm install` in `../peerline-ts` first as well.
 
 ## License
 

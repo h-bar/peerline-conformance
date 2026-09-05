@@ -1,12 +1,12 @@
 //! The conformance battery, run against any peerline WebSocket server.
 //!
 //! The other half of the cross-language interop harness: point it at the
-//! TypeScript server (`conformance/ts/server.mjs`) and the same
+//! TypeScript server (`ts/server.mjs`) and the same
 //! battery that pins every Rust transport now pins the TS runtime too.
 //!
 //! ```sh
-//! cargo run -p peerline-transport-ws --features conformance \
-//!     --example conformance_client -- ws://127.0.0.1:1234/
+//! cargo run -p peerline-conformance --features ws \
+//!     --bin conformance_client -- ws://127.0.0.1:1234/
 //! ```
 //!
 //! Prints `BATTERY OK` and exits 0 on success. On failure the battery's

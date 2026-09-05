@@ -1,7 +1,7 @@
 //! The conformance handler-set, served over WebSocket on a loopback port.
 //!
 //! Half of the cross-language interop harness: this is the Rust *server*
-//! the TypeScript client (`conformance/ts/client.mjs`) runs
+//! the TypeScript client (`ts/client.mjs`) runs
 //! against. It binds an OS-assigned port on 127.0.0.1, prints exactly one
 //! machine-readable line once the port is accepting connections
 //!
@@ -12,7 +12,7 @@
 //! and then serves until it is killed.
 //!
 //! ```sh
-//! cargo run -p peerline-transport-ws --features conformance --example conformance_server
+//! cargo run -p peerline-conformance --features ws --bin conformance_server
 //! ```
 
 use std::io::Write;

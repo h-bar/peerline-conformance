@@ -1,8 +1,8 @@
 /**
  * The shared cross-language conformance vectors.
  *
- * `conformance/vectors.json` lives at the repo root and is consumed by *both*
- * implementations: `tests/conformance_vectors.rs` on the Rust side and this
+ * `vectors.json` lives at the repo root and is consumed by *both*
+ * implementations: `rust/tests/vectors.rs` on the Rust side and this
  * spec on the TypeScript side. That's the point — the two are pinned to each
  * other, not each to its own suite.
  *

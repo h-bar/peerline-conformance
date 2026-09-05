@@ -1,7 +1,7 @@
 /**
  * The TypeScript half of the interop harness: the battery, run as a client.
  *
- * Mirrors `conformance/rust/src/bin/conformance_client.rs` — dials the URL
+ * Mirrors `rust/src/bin/conformance_client.rs` — dials the URL
  * given as `argv[2]`, runs the shared {@link battery} against whatever is
  * serving there (in practice the Rust `conformance_server`), and prints
  *

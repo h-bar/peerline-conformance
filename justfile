@@ -7,8 +7,15 @@
 #     ├── peerline/              the Rust implementation
 #     ├── peerline-ts/           the TypeScript implementation
 #     └── peerline-conformance/  this repo
+#
+# The TypeScript recipes (`vectors-ts`, `interop`) import and build the
+# sibling sources, so run `pnpm install` in ../peerline-ts (and
+# `pnpm install --dir ts` here) before the first run.
 
-default: vectors bindings interop
+# Check-only by default: `bindings-check` fails on drift where the plain
+# `bindings` recipe would silently rewrite ../peerline-ts and leave the drift
+# uncommitted. Run `just bindings` explicitly when regeneration is the point.
+default: vectors bindings-check interop
 
 # --- the static half ---
 # `vectors.json` is raw frame text plus the disposition every implementation

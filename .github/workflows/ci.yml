@@ -1,0 +1,78 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  # Fail on warnings in CI without putting a `deny` attribute in the source.
+  RUSTFLAGS: -D warnings
+
+# This repository checks the two implementations, which live in their own
+# repositories, so CI recreates the side-by-side layout the path deps and
+# relative imports expect:
+#
+#     $GITHUB_WORKSPACE/
+#     ├── peerline/              the Rust implementation
+#     ├── peerline-ts/           the TypeScript implementation
+#     └── peerline-conformance/  this repo
+jobs:
+  conformance:
+    name: conformance
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: peerline-conformance
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          path: peerline-conformance
+      - uses: actions/checkout@v5
+        with:
+          repository: h-bar/peerline
+          path: peerline
+      - uses: actions/checkout@v5
+        with:
+          repository: h-bar/peerline-ts
+          path: peerline-ts
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: peerline-conformance
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: |
+            peerline-conformance/ts/pnpm-lock.yaml
+            peerline-ts/pnpm-lock.yaml
+
+      # The Rust half: the golden vectors plus the full transport matrix.
+      # `--all-features` turns on `ws` so the interop binaries build too.
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets --all-features
+      - run: cargo test --workspace --all-features
+
+      # The TypeScript half: `ts/vectors.test.ts` imports the sibling's
+      # sources directly, so peerline-ts needs its own install first.
+      - run: pnpm install --frozen-lockfile --dir ../peerline-ts
+      - run: pnpm install --frozen-lockfile --dir ts
+      - run: pnpm --dir ts test
+
+      # The cross-language guarantees this repo exists for: the committed
+      # ts-rs bindings in peerline-ts must match the Rust source that
+      # generates them, and one battery must pass live over a real
+      # WebSocket in both directions (Rust serves → TS battery, and the
+      # reverse). Both recipes live in the justfile so CI and a laptop
+      # run the same thing.
+      - uses: extractions/setup-just@v3
+      - run: just bindings-check
+      - run: just interop

@@ -28,10 +28,10 @@
 //!   dev-depend on this crate and check themselves against the same battery.
 //!
 //! This is the *behavioural* half of the conformance story; the static half
-//! is `conformance/vectors.json`, which pins frame-level accept/reject
+//! is `vectors.json` at the repository root, which pins frame-level accept/reject
 //! across implementations.
 //!
-//! The `conformance/ts/battery.ts` port mirrors this file case for case;
+//! The `ts/battery.ts` port mirrors this file case for case;
 //! keep the two in step, and keep every op name here stable — they are the
 //! interop wire contract.
 

@@ -1,7 +1,7 @@
 /**
  * The TypeScript half of the interop harness: a peerline server on Node.
  *
- * Mirrors `conformance/rust/src/bin/conformance_server.rs` — a `ws`
+ * Mirrors `rust/src/bin/conformance_server.rs` — a `ws`
  * server on an OS-assigned loopback port, running
  * {@link registerHandlers} on one {@link Peer} per connection, announcing
  *
