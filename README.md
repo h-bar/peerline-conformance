@@ -98,7 +98,7 @@ and `just bindings-check` live here rather than in either implementation.
 Needs both implementation repositories checked out alongside this one:
 
 ```
-libs/
+peerline/                  (any parent folder)
 ├── peerline/              the Rust implementation
 ├── peerline-ts/           the TypeScript implementation
 └── peerline-conformance/  this repo

@@ -3,7 +3,7 @@
 # Everything here checks the two implementations, which live in their own
 # repositories, so a fresh clone needs both checked out alongside this one:
 #
-#     libs/
+#     peerline/                  (any parent folder)
 #     ├── peerline/              the Rust implementation
 #     ├── peerline-ts/           the TypeScript implementation
 #     └── peerline-conformance/  this repo
