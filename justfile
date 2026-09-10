@@ -59,6 +59,11 @@ matrix:
 # consumer. Each language ships one server and one client, so a direction is
 # one language's server paired with the other's client — the same recipe
 # twice with the halves swapped. Loopback only; no network.
+#
+# The client's last act is the truncation battery, which tells the server to
+# crash so it can check what a dying peer looks like to a consumer. Each
+# direction therefore starts its own server and leaves it dead — which is
+# what `_interop` already does anyway.
 interop: interop-rust-serves interop-ts-serves
 
 # Rust serves, TypeScript runs the battery.

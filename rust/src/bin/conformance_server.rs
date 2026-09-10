@@ -9,7 +9,9 @@
 //! LISTENING ws://127.0.0.1:<port>/
 //! ```
 //!
-//! and then serves until it is killed.
+//! and then serves until it is killed — by the harness, or by the `crash`
+//! notification the client sends to end the run (see
+//! `peerline_conformance::register_crash`).
 //!
 //! ```sh
 //! cargo run -p peerline-conformance --features ws --bin conformance_server
@@ -19,7 +21,7 @@ use std::io::Write;
 use std::net::SocketAddr;
 use std::time::Duration;
 
-use peerline_conformance::register;
+use peerline_conformance::{register, register_crash};
 
 #[tokio::main]
 async fn main() -> Result<(), String> {
@@ -36,7 +38,15 @@ async fn main() -> Result<(), String> {
     let serving = tokio::spawn(async move {
         peerline_transport_ws::serve(
             addr,
-            peerline_transport_ws::WsPolicy::allow_any().acceptor(register),
+            peerline_transport_ws::WsPolicy::allow_any().acceptor(
+                |peer: &peerline::runtime::Peer| {
+                    register(peer);
+                    // The interop client's last act is a `crash` notification,
+                    // which kills this process mid-stream. Only the runners
+                    // install it; see `register_crash`.
+                    register_crash(peer);
+                },
+            ),
         )
         .await
     });

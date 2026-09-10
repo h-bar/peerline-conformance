@@ -9,7 +9,9 @@
  * LISTENING ws://127.0.0.1:<port>/
  * ```
  *
- * on stdout and then serving until it is killed. `just interop` starts it,
+ * on stdout and then serving until it is killed — by the harness, or by the
+ * `crash` notification the client sends to end the run (see
+ * {@link registerCrash}). `just interop` starts it,
  * reads that line, and points the Rust `conformance_client` binary at it.
  *
  * Plain `.mjs`, run by `node` with no loader: the accepted socket is handed
@@ -24,13 +26,19 @@
 import { WebSocketServer } from "ws";
 
 import { connectWebSocket } from "../../peerline-ts/dist/index.js";
-import { registerHandlers } from "./battery.ts";
+import { registerCrash, registerHandlers } from "./battery.ts";
 
 const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
 
 server.on("connection", (socket) => {
   connectWebSocket(socket).then(
-    ({ peer }) => registerHandlers(peer),
+    ({ peer }) => {
+      registerHandlers(peer);
+      // The interop client's last act is a `crash` notification, which kills
+      // this process mid-stream. Only the runners install it; see
+      // `registerCrash`.
+      registerCrash(peer);
+    },
     (error) => console.error("interop server: adopt failed:", error),
   );
 });

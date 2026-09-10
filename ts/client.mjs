@@ -26,7 +26,7 @@
 import { WebSocket } from "ws";
 
 import { connectWebSocket } from "../../peerline-ts/dist/index.js";
-import { battery } from "./battery.ts";
+import { battery, truncationBattery } from "./battery.ts";
 
 const url = process.argv[2];
 if (!url) {
@@ -59,10 +59,15 @@ const { peer, closed } = connection;
 // and throws on the first mismatch.
 await battery(peer);
 
+// Last, because it ends the connection: what a consumer sees when the
+// producing peer dies with a stream open and a call in flight.
+await truncationBattery(peer);
+
 console.log("BATTERY OK");
 
-// Close cleanly, then let the driver observe it: the server sees the socket
-// go rather than the process vanishing mid-frame.
+// Close down. The server is already gone (the truncation battery told it to
+// crash), so this is just tidy shutdown of a connection with nothing left to
+// say — `closed` has resolved already.
 peer.close();
 await closed;
 process.exit(0);

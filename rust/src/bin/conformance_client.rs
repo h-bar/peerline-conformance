@@ -16,7 +16,7 @@
 use std::io::Write;
 use std::time::Duration;
 
-use peerline_conformance::battery;
+use peerline_conformance::{battery, truncation_battery};
 
 #[tokio::main]
 async fn main() -> Result<(), String> {
@@ -46,11 +46,16 @@ async fn main() -> Result<(), String> {
     // echo) and panics on the first mismatch.
     battery(&client).await;
 
+    // Last, because it ends the connection: what a consumer sees when the
+    // producing peer dies with a stream open and a call in flight.
+    truncation_battery(&client).await;
+
     println!("BATTERY OK");
     std::io::stdout().flush().map_err(|e| e.to_string())?;
 
-    // Drop the peer, then let the driver observe it and finish: the server
-    // sees the socket go rather than the process vanishing mid-frame.
+    // Drop the peer, then let the driver observe it and finish. The server
+    // is already gone (the truncation battery told it to crash), so this is
+    // just tidy shutdown of a connection that has nothing left to say.
     drop(client);
     let _ = tokio::time::timeout(Duration::from_secs(5), driving).await;
     Ok(())

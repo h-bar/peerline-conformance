@@ -7,6 +7,12 @@
 //! multiplexing, peer symmetry (server → client call inside a client →
 //! server call) and a 1 MiB frame.
 //!
+//! [`truncation_battery`] is the tail that cannot live in [`battery`]: it
+//! kills the connection on purpose, to pin what a consumer sees when the
+//! peer dies with a stream open and a call in flight. It runs last, only in
+//! the cross-process interop runners, and needs the server to have installed
+//! [`register_crash`].
+//!
 //! They live in a library rather than in some crate's `tests/` because Rust
 //! cannot share test code across crates — an integration-test or binary
 //! target is not linkable, so anything reachable from *another* crate's tests
@@ -153,6 +159,38 @@ pub fn register(peer: &Peer) {
     });
 
     peer.on_request("big", |e: Echo| async move { Ok::<_, RpcError>(e.s) });
+
+    // The truncation pair (see `truncation_battery`): work that is still
+    // outstanding when the connection dies. Neither ever settles on its own,
+    // so the only way a consumer sees either end is the connection going
+    // away — which is exactly the case being pinned.
+    peer.on_request("hang", |_: serde_json::Value| async move {
+        futures::future::pending::<()>().await;
+        Ok::<_, RpcError>(())
+    });
+    peer.on_stream_request("hang_stream", |_: serde_json::Value, sender| async move {
+        sender.send_item(&"open").map_err(rpc_err)?;
+        futures::future::pending::<()>().await;
+        Ok(())
+    });
+}
+
+/// The `crash` sink: on notification, **exit this process**, dropping the
+/// connection with the `hang` / `hang_stream` work above still outstanding.
+///
+/// Registered only by the interop *server runners* — deliberately not by
+/// [`register`], which the in-process transport matrix installs on a peer
+/// living in the test process. Killing a whole process is the bluntest
+/// available "the producer died", and it is honest: peerline has no
+/// per-connection close on the server side, and the field failure this pins
+/// (a producer dying mid-stream) is precisely a process going away.
+///
+/// Mirrored by `registerCrash` in `ts/battery.ts`; `crash` is part of the
+/// interop wire contract.
+pub fn register_crash(peer: &Peer) {
+    peer.on_notification("crash", |_: serde_json::Value| async move {
+        std::process::exit(0);
+    });
 }
 
 /// The full client-side battery. `client`'s peer is connected to a server
@@ -273,4 +311,83 @@ pub async fn battery(client: &Peer) {
         .expect("big");
     assert_eq!(back.len(), big.len());
     assert_eq!(back, big);
+}
+
+/// The truncation half of the battery: what a consumer sees when the
+/// connection dies with work outstanding.
+///
+/// Kept out of [`battery`] because it *ends the connection* — it must run
+/// last, and only against a server that also ran [`register_crash`] (the
+/// interop runners; the in-process matrix runs [`battery`] alone).
+///
+/// Three things must be true at once, and the first is what keeps the other
+/// two honest:
+///
+/// 1. a stream that reaches its terminal still ends **cleanly**;
+/// 2. a stream the connection cuts short ends with an **error**, not with
+///    the same clean end — otherwise a truncated stream reads as a complete
+///    one, and half a history looks like all of it;
+/// 3. a unary call in flight when the connection dies fails as
+///    `Error::Abandoned`, not as an `Error::Rpc` a consumer would have to
+///    tell from a real remote error by its message text.
+///
+/// The TypeScript port is `truncationBattery` in `ts/battery.ts`, asserting
+/// the same three things in that runtime's spelling (a thrown
+/// `AbandonedError` where Rust yields `Err(Error::Abandoned)`).
+pub async fn truncation_battery(client: &Peer) {
+    // 1. A stream that reaches its terminal ends cleanly — the control for
+    //    everything below, without which "every stream errors" would pass.
+    let mut complete: StreamReceiver<u32> = client
+        .call_stream("count_stream", &N { n: 2 })
+        .expect("count_stream");
+    let mut items = Vec::new();
+    while let Some(item) = complete.next().await {
+        items.push(item.expect("no error on a clean stream").data);
+    }
+    assert_eq!(items, vec![0, 1]);
+
+    // Open the stream that never terminates, and wait for its first item so
+    // the producer is provably live before the connection is cut.
+    let mut cut: StreamReceiver<String> = client
+        .call_stream("hang_stream", &json!({}))
+        .expect("hang_stream");
+    assert_eq!(
+        cut.next()
+            .await
+            .expect("hang_stream opened")
+            .expect("first item")
+            .data,
+        "open"
+    );
+
+    // `join` polls the call first, so it is registered and sent before the
+    // `crash` notification below — in flight, exactly as required.
+    let (call, ()) = tokio::time::timeout(
+        Duration::from_secs(30),
+        futures::future::join(
+            client.call::<_, serde_json::Value>("hang", &json!({})),
+            async {
+                client.notify("crash", &json!({})).expect("crash");
+
+                // 2. The truncated stream: an error, and specifically not the
+                //    clean end a complete stream gives.
+                match cut.next().await {
+                    Some(Err(Error::Abandoned)) => {}
+                    other => panic!("expected Err(Abandoned) on truncation, got {other:?}"),
+                }
+                assert!(
+                    cut.next().await.is_none(),
+                    "the stream should be fused after the truncation error"
+                );
+            },
+        ),
+    )
+    .await
+    .expect("teardown never reached the consumer");
+
+    // 3. The in-flight unary call keeps its own type.
+    match call.expect_err("the call cannot succeed") {
+        Error::Abandoned => {}
+        other => panic!("expected Abandoned for the in-flight call, got {other:?}"),
+    }
 }

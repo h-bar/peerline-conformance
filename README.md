@@ -61,16 +61,38 @@ expectations.
 One handler-set and one battery, defined once per language and mirrored case
 for case (`rust/src/lib.rs`, `ts/battery.ts`).
 
-`register` installs eleven handlers — `echo`, `add`, `fail`, `fail_data`,
-`note`, `count`, `count_stream`, `boom_stream`, `barrier`, `reverse`, `big` —
-and `battery` calls them and asserts the answers: typed args, error
-propagation with and without `data`, notification delivery, streaming to a
-clean end and to a mid-stream error, concurrent multiplexing, peer symmetry,
-and a 1 MiB frame.
+`register` installs thirteen handlers — `echo`, `add`, `fail`, `fail_data`,
+`note`, `count`, `count_stream`, `boom_stream`, `barrier`, `reverse`, `big`,
+`hang`, `hang_stream` — and `battery` calls them and asserts the answers:
+typed args, error propagation with and without `data`, notification delivery,
+streaming to a clean end and to a mid-stream error, concurrent multiplexing,
+peer symmetry, and a 1 MiB frame.
 
 The multiplexing check parks `CONCURRENCY` calls on a shared barrier that only
 releases once all of them arrive, so an implementation that serialises
 requests deadlocks rather than quietly passing. It cannot succeed by accident.
+
+### The tail: what a dying peer looks like
+
+`truncation_battery` / `truncationBattery` runs last in the interop runners
+only, because it **ends the connection**. The client opens `hang_stream` (one
+item, no terminal ever) and leaves a `hang` call in flight, then sends the
+`crash` notification, which the server runners answer by exiting the process —
+peerline has no server-side per-connection close, and "the producing process
+died" is the failure this pins.
+
+Three assertions, and the first is what keeps the other two honest:
+
+1. a stream that reaches its terminal still ends **cleanly**;
+2. a stream the connection cut short ends with an **error** — `Err(Abandoned)`
+   in Rust, a thrown `AbandonedError` in TypeScript — never with the clean end
+   a complete stream gives, or half a stream would read as all of it;
+3. the in-flight call fails as `Abandoned` too, not as an RPC error a consumer
+   would have to tell from a real remote failure by its message text.
+
+This is a *runtime* contract rather than a wire one, which is exactly why it
+belongs here: nothing in `vectors.json` can catch two runtimes disagreeing
+about what a dropped connection means.
 
 ### Runners
 
@@ -81,8 +103,8 @@ the same recipe twice with the halves swapped.
 | Runner | Proves |
 | --- | --- |
 | `just matrix` | no drift between loopback / uds / ws / iroh; multi-service mounting; the iroh seam below `Peer` |
-| `just interop-rust-serves` | Rust serves, the TypeScript battery dials |
-| `just interop-ts-serves` | TypeScript serves, the Rust battery dials |
+| `just interop-rust-serves` | Rust serves, the TypeScript battery dials (and kills the Rust server on its way out) |
+| `just interop-ts-serves` | TypeScript serves, the Rust battery dials (and kills the TypeScript server on its way out) |
 | `just bindings-check` | `peerline-ts`'s generated wire types match the Rust source |
 
 The transport matrix is why this repository holds all transport testing: each

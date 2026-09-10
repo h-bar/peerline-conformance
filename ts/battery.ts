@@ -12,6 +12,11 @@
  * - `server.mjs` runs {@link registerHandlers} per connection, and the
  *   Rust `conformance_client` binary runs the Rust battery against it.
  *
+ * {@link truncationBattery} is the tail that cannot live in {@link battery}:
+ * it kills the connection on purpose, to pin what a consumer sees when the
+ * peer dies with a stream open and a call in flight. It runs last, and needs
+ * the server to have installed {@link registerCrash}.
+ *
  * Two constraints shape the style. It must run **unbuilt under plain Node**
  * (`server.mjs` imports it and Node strips the types), so every import of
  * the package is `import type` — erased before Node resolves anything — and
@@ -85,6 +90,31 @@ export function registerHandlers(peer: Peer): void {
   );
 
   peer.onRequest<{ s: string }, string>("big", (args) => args.s);
+
+  // The truncation pair (see `truncationBattery`): work that is still
+  // outstanding when the connection dies. Neither ever settles on its own,
+  // so the only way a consumer sees either end is the connection going away
+  // — which is exactly the case being pinned.
+  peer.onRequest("hang", () => new Promise<never>(() => {}));
+  peer.onStreamRequest("hang_stream", (_args, sender: StreamSender) => {
+    sender.sendItem("open");
+    return new Promise<never>(() => {});
+  });
+}
+
+/**
+ * The `crash` sink: on notification, **exit this process**, dropping the
+ * connection with the `hang` / `hang_stream` work above still outstanding.
+ *
+ * Registered only by `server.mjs` — deliberately not by
+ * {@link registerHandlers}, which is also installed on peers living inside a
+ * test process. `conformance::register_crash` is the Rust half; `crash` is
+ * part of the interop wire contract.
+ */
+export function registerCrash(peer: Peer): void {
+  peer.onNotification("crash", () => {
+    process.exit(0);
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -167,6 +197,80 @@ export async function battery(client: Peer): Promise<void> {
   assert.ok(back === big, "1 MiB payload came back changed");
 }
 
+/**
+ * The truncation half of the battery — `conformance::truncation_battery`.
+ *
+ * Kept out of {@link battery} because it *ends the connection*: it must run
+ * last, and only against a server that also ran {@link registerCrash}.
+ *
+ * Three things must be true at once, and the first is what keeps the other
+ * two honest:
+ *
+ * 1. a stream that reaches its terminal still ends **cleanly**;
+ * 2. a stream the connection cuts short **throws**, rather than ending the
+ *    same way a finished one does — otherwise a truncated stream reads as a
+ *    complete one, and half a history looks like all of it;
+ * 3. a unary call in flight when the connection dies rejects with
+ *    `AbandonedError`, not with the `RpcCallError` a consumer would have to
+ *    tell from a real remote error by its message text.
+ *
+ * Where Rust yields `Err(Error::Abandoned)` from `poll_next`, an async
+ * iterator raises: the same distinction, spelled the way each language
+ * spells "this did not finish".
+ */
+export async function truncationBattery(client: Peer): Promise<void> {
+  // 1. A stream that reaches its terminal ends cleanly — the control for
+  //    everything below, without which "every stream throws" would pass.
+  const items: number[] = [];
+  for await (const item of client.callStream<number>("count_stream", { n: 2 })) {
+    items.push(item.data);
+  }
+  assert.deepEqual(items, [0, 1]);
+
+  // Open the stream that never terminates, and wait for its first item so
+  // the producer is provably live before the connection is cut.
+  const cut = client.callStream<string>("hang_stream", {});
+  const opened = await cut.next();
+  assert.equal(opened.done, false, "hang_stream should open");
+  assert.equal((opened.value as StreamItem<string>).data, "open");
+
+  // In flight when the crash lands. Registration is synchronous in `call`,
+  // and the frame goes out before the notification below, so the server
+  // has it in hand when it dies.
+  const hang = client.call("hang", {});
+  const inflight = hang.then(
+    () => new Error("the in-flight call cannot succeed"),
+    (thrown: unknown) => thrown,
+  );
+
+  client.notify("crash", {});
+
+  // 2. The truncated stream raises, and specifically not with the clean end
+  //    a complete stream gives.
+  const truncated = await failure(
+    withTimeout(cut.next(), 30_000, "truncated stream"),
+    "hang_stream",
+  );
+  assert.equal(
+    truncated.name,
+    "AbandonedError",
+    `hang_stream: expected AbandonedError, got ${truncated.name}: ${truncated.message}`,
+  );
+  assert.equal(
+    (await cut.next()).done,
+    true,
+    "the stream should be fused after the truncation error",
+  );
+
+  // 3. The in-flight unary call keeps its own type.
+  const abandoned = (await withTimeout(inflight, 30_000, "in-flight call")) as Error;
+  assert.equal(
+    abandoned.name,
+    "AbandonedError",
+    `hang: expected AbandonedError, got ${abandoned.name}: ${abandoned.message}`,
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Internals
 // ---------------------------------------------------------------------------
@@ -216,4 +320,38 @@ function barrier(n: number): () => Promise<void> {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Await a promise that must reject, and hand back what it threw. Unlike
+ * {@link rejection} this asserts nothing about the shape: the truncation
+ * checks are about *which* error class arrives.
+ */
+async function failure(promise: Promise<unknown>, what: string): Promise<Error> {
+  try {
+    await promise;
+  } catch (thrown) {
+    return thrown as Error;
+  }
+  throw new Error(`${what}: expected a rejection, got a value`);
+}
+
+/** Fail loudly instead of hanging if teardown never reaches the consumer. */
+function withTimeout<T>(promise: Promise<T>, ms: number, what: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error(`${what}: nothing arrived within ${ms}ms`));
+    }, ms);
+    timer.unref();
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (thrown: unknown) => {
+        clearTimeout(timer);
+        reject(thrown as Error);
+      },
+    );
+  });
 }
