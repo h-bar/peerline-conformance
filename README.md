@@ -144,6 +144,16 @@ package with one runtime dependency (`ws` — Node has no built-in WebSocket
 `just interop` also import and build the sibling `peerline-ts` sources, so run
 `pnpm install` in `../peerline-ts` first as well.
 
+This repository also carries `family.justfile` — the local CI for the whole
+family, spanning every sibling's suite plus everything above. It runs from
+the parent folder via a symlink, which a fresh checkout creates once:
+
+```sh
+cd .. && ln -s peerline-conformance/family.justfile justfile
+just quick        # the fast cross-language gate — seconds
+just verify       # the release gate — every suite, matrix and battery
+```
+
 ## License
 
 MIT.

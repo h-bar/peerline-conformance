@@ -12,9 +12,9 @@
 # sibling sources, so run `pnpm install` in ../peerline-ts (and
 # `pnpm install --dir ts` here) before the first run.
 
-# Check-only by default: `bindings-check` fails on drift where the plain
-# `bindings` recipe would silently rewrite ../peerline-ts and leave the drift
-# uncommitted. Run `just bindings` explicitly when regeneration is the point.
+# Check-only by default: `bindings-check` exports into a scratch directory and
+# diffs, so checking never writes into ../peerline-ts. Run `just bindings`
+# explicitly when regeneration is the point.
 default: vectors bindings-check interop
 
 # --- the static half ---
@@ -45,8 +45,27 @@ bindings:
     @echo "bindings: regenerated into ../peerline-ts/src/generated"
 
 # Fail if the committed bindings have drifted from the Rust source.
-bindings-check: bindings
-    git -C ../peerline-ts diff --exit-code -- src/generated
+#
+# Deliberately *not* `bindings` + `git diff`: that would rewrite the sibling
+# repo's working tree as a side effect of checking it, and its verdict would
+# be confused by any drift already sitting uncommitted there. Instead the
+# export goes to a scratch directory — a plain environment variable wins over
+# the `.cargo/config.toml` `[env]` value, which is not `force`d — and the
+# committed directory is compared against it, byte for byte, sibling untouched.
+bindings-check:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    scratch=$(mktemp -d -t peerline-bindings-check)
+    trap 'rm -rf "$scratch"' EXIT
+    TS_RS_EXPORT_DIR="$scratch" cargo test --quiet \
+        --manifest-path ../peerline/Cargo.toml \
+        -p peerline --features ts-export export_bindings
+    if ! diff -ru ../peerline-ts/src/generated "$scratch"; then
+        echo "bindings-check: src/generated has drifted from the Rust source." >&2
+        echo "bindings-check: run \`just bindings\` to regenerate it." >&2
+        exit 1
+    fi
+    echo "bindings-check: ../peerline-ts/src/generated matches the Rust source"
 
 # --- the live half ---
 

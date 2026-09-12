@@ -3,6 +3,7 @@
   "version": "0.0.7",
   "private": true,
   "type": "module",
+  "packageManager": "pnpm@10.28.2",
   "description": "TypeScript half of the peerline conformance suite: the golden-vector check, plus the interop battery with one server and one client pairing against the Rust half.",
   "scripts": {
     "test": "vitest run",
