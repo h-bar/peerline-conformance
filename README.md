@@ -24,7 +24,7 @@ ts/              one battery, one server, one client — the TypeScript half
 
 ## The static half: golden vectors
 
-`vectors.json` holds 108 entries. Each is a frame **as text** plus the
+`vectors.json` holds 112 entries. Each is a frame **as text** plus the
 disposition both implementations must agree on:
 
 ```jsonc
@@ -35,10 +35,17 @@ disposition both implementations must agree on:
 }
 ```
 
-**38 accept, 70 reject.** The reject majority is the point — compatibility is
+**42 accept, 70 reject.** The reject majority is the point — compatibility is
 mostly about refusing the same things. The set covers `bad-ver-2`,
 `unknown-key-on-req`, `notif-with-id`, `resp-both-data-and-err`,
 `req-id-fractional`, `stream-seq-string`, `resp-err-code-above-i32` and so on.
+
+The accept side also pins the exact spelling of the reserved conventions,
+which is the one thing the live battery cannot: it asserts that a
+subscription completed cleanly, not that the frame saying so was
+`$peerline/pubsub.end` carrying `subscription_id` and nothing else. Hence
+`pubsub-event-notif`, `pubsub-end-notif`, `pubsub-unsubscribe-req`,
+`pubsub-unsubscribe-ack` and `stream-cancel-notif`.
 
 Storing frames as text rather than parsed objects keeps JSON-level divergence
 in scope: duplicate keys, number formats, lone surrogates.
@@ -61,16 +68,27 @@ expectations.
 One handler-set and one battery, defined once per language and mirrored case
 for case (`rust/src/lib.rs`, `ts/battery.ts`).
 
-`register` installs thirteen handlers — `echo`, `add`, `fail`, `fail_data`,
+`register` installs twenty-four handlers and `battery` calls them and asserts
+the answers. The original thirteen — `echo`, `add`, `fail`, `fail_data`,
 `note`, `count`, `count_stream`, `boom_stream`, `barrier`, `reverse`, `big`,
-`hang`, `hang_stream` — and `battery` calls them and asserts the answers:
-typed args, error propagation with and without `data`, notification delivery,
-streaming to a clean end and to a mid-stream error, concurrent multiplexing,
-peer symmetry, and a 1 MiB frame.
+`hang`, `hang_stream` — cover typed args, error propagation with and without
+`data`, notification delivery, streaming to a clean end and to a mid-stream
+error, concurrent multiplexing, peer symmetry, and a 1 MiB frame.
 
 The multiplexing check parks `CONCURRENCY` calls on a shared barrier that only
 releases once all of them arrive, so an implementation that serialises
 requests deadlocks rather than quietly passing. It cannot succeed by accident.
+
+The rest cover the surface each implementation grew its own tests for but
+which had never met its counterpart over a wire:
+
+| Handlers | Pins |
+| --- | --- |
+| `sub.open`, `sub.emit`, `sub.end_key`, `sub.count` | the pubsub **runtime layer** — `Publisher` / `Subscription`, not hand-built frames — through all three endings: the producer's `end` completes cleanly, and an unsubscribe *or* a dropped handle prunes the producer, which only the producer can report |
+| `kind_stream`, `kind_unary` | **kind mismatch** both ways: `call` against a stream handler and `call_stream` against a unary one. Each runtime resolves this locally, in the caller, so running it across the wire is what checks the *counterpart* emits the frames that resolution expects — same code and same message text in both languages |
+| `slow_stream`, `cancel_report` | **stream cancel** seen from the producing end: the cancel arrives, and a send after it is refused — which is also why no terminal is delivered, since the same closed stream drops both |
+| `strict_add` | **malformed args** answered `-32602` by both servers. Rust gets that free from `serde_json::from_value`; the TypeScript half registers the equivalent `opts.parse` validator, and that asymmetry is the case |
+| `throw_plain`, `boom_stream_data` | an unknown op is `MethodNotFound` both ways; a handler failing in a way that is not already an `RpcError` is `-32603` both ways; and `data` survives on a stream **error terminal**, which `fail_data` (a response) does not reach |
 
 ### The tail: what a dying peer looks like
 
@@ -103,9 +121,26 @@ the same recipe twice with the halves swapped.
 | Runner | Proves |
 | --- | --- |
 | `just matrix` | no drift between loopback / uds / ws / iroh; multi-service mounting; the iroh seam below `Peer` |
-| `just interop-rust-serves` | Rust serves, the TypeScript battery dials (and kills the Rust server on its way out) |
-| `just interop-ts-serves` | TypeScript serves, the Rust battery dials (and kills the TypeScript server on its way out) |
+| `just interop-rust-serves` | Rust serves over WebSocket, the TypeScript battery dials (and kills the Rust server on its way out) |
+| `just interop-ts-serves` | TypeScript serves over WebSocket, the Rust battery dials (and kills the TypeScript server on its way out) |
+| `just interop-uds-rust-serves` | Rust serves over a Unix socket, the TypeScript battery dials it with `connectNodeSocket` |
+| `just interop-uds-ts-serves` | TypeScript serves over a Unix socket (`net.createServer` + `attachNodeSocket`), the Rust UDS transport dials it |
 | `just bindings-check` | `peerline-ts`'s generated wire types match the Rust source |
+
+`just interop` runs all four. The two pairings are there because the two
+languages have two framings that have to agree: WebSocket carries frames the
+protocol already delimits, while the Unix-socket leg puts Rust's
+`peerline-transport-uds` (a `LinesCodec` with a shared `MAX_FRAME_LEN`) in
+front of the TypeScript `node:net` adapter (its own newline splitter with a
+FIFO write queue and the same ceiling) — two independent implementations of
+one framing.
+
+One server binary and one client binary per language serve every leg: each
+dispatches on the shape of its single address argument, a `ws://` url or a
+filesystem path, so `_interop` spawns the same two programs either way and
+only what it greps off the `LISTENING` line differs. Sockets go under a short
+`/tmp` template, because `sun_path` is 104 bytes on Darwin and the UDS
+transport appends a staging suffix before renaming.
 
 The transport matrix is why this repository holds all transport testing: each
 transport's own crate has no `tests/` directory, because running the identical

@@ -1,12 +1,18 @@
-//! The conformance battery, run against any peerline WebSocket server.
+//! The conformance battery, run against any peerline server.
 //!
 //! The other half of the cross-language interop harness: point it at the
 //! TypeScript server (`ts/server.mjs`) and the same
 //! battery that pins every Rust transport now pins the TS runtime too.
 //!
+//! The single argument is the address the server announced. A `ws://` or
+//! `wss://` url dials WebSocket; anything else is taken as a Unix socket
+//! path, which is how this reaches a TypeScript server built on `node:net`.
+//!
 //! ```sh
-//! cargo run -p peerline-conformance --features ws \
+//! cargo run -p peerline-conformance --features ws,uds \
 //!     --bin conformance_client -- ws://127.0.0.1:1234/
+//! cargo run -p peerline-conformance --features ws,uds \
+//!     --bin conformance_client -- /tmp/plc.abc/s
 //! ```
 //!
 //! Prints `BATTERY OK` and exits 0 on success. On failure the battery's
@@ -14,32 +20,49 @@
 //! caller only has to check the status (and, if it likes, the line).
 
 use std::io::Write;
+use std::path::Path;
 use std::time::Duration;
 
+use futures::future::BoxFuture;
+use peerline::runtime::Peer;
 use peerline_conformance::{battery, truncation_battery};
 
-#[tokio::main]
-async fn main() -> Result<(), String> {
-    let url = std::env::args()
-        .nth(1)
-        .ok_or("usage: conformance_client <ws-url>")?;
-
-    // Dial retry: the server may still be binding when we are started.
+/// Dial until the server is up, whichever transport the address names.
+///
+/// Both transports hand back the same `(Peer, driver)` pair, so the only
+/// thing the address decides is which `connect` runs — the battery below
+/// cannot tell the difference, which is the point.
+async fn dial(address: &str) -> Result<(Peer, BoxFuture<'static, ()>), String> {
+    let is_ws = address.starts_with("ws://") || address.starts_with("wss://");
     let mut last = String::new();
-    let mut connected = None;
     for _ in 0..300 {
-        match peerline_transport_ws::connect(&url).await {
-            Ok(c) => {
-                connected = Some(c);
-                break;
-            }
+        let attempt = if is_ws {
+            peerline_transport_ws::connect(address)
+                .await
+                .map_err(|e| e.to_string())
+        } else {
+            peerline_transport_uds::connect(Path::new(address))
+                .await
+                .map_err(|e| e.to_string())
+        };
+        match attempt {
+            Ok(c) => return Ok(c),
             Err(e) => {
-                last = e.to_string();
+                last = e;
                 tokio::time::sleep(Duration::from_millis(50)).await;
             }
         }
     }
-    let (client, driver) = connected.ok_or(format!("dial {url} timed out: {last}"))?;
+    Err(format!("dial {address} timed out: {last}"))
+}
+
+#[tokio::main]
+async fn main() -> Result<(), String> {
+    let address = std::env::args()
+        .nth(1)
+        .ok_or("usage: conformance_client <ws-url|socket-path>")?;
+
+    let (client, driver) = dial(&address).await?;
     let driving = tokio::spawn(driver);
 
     // `battery` registers the handlers it needs on the client (the reverse

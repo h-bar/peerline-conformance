@@ -1,9 +1,9 @@
 /**
  * The conformance battery and handler set, in TypeScript.
  *
- * A case-for-case port of `crates/peerline/src/conformance.rs`: the two
- * exports here answer to the two exports there, over the same op names, and
- * the two are the cross-language wire contract. Change one, change both.
+ * A case-for-case port of `rust/src/lib.rs`: the two exports here answer to
+ * the two exports there, over the same op names, and the two are the
+ * cross-language wire contract. Change one, change both.
  *
  * Both interop directions reuse this file:
  *
@@ -90,6 +90,122 @@ export function registerHandlers(peer: Peer): void {
   );
 
   peer.onRequest<{ s: string }, string>("big", (args) => args.s);
+
+  // -------------------------------------------------------------------------
+  // Pubsub, through the runtime layer
+  // -------------------------------------------------------------------------
+  //
+  // The subscribe op is deliberately application-named — the convention
+  // reserves only the `$peerline/pubsub.*` push ops, so "what it takes to open
+  // a subscription" stays the application's contract. Everything else goes
+  // through `Publisher`, never through hand-built frames: that is what makes
+  // this a check of the two *runtime layers* against each other rather than of
+  // two test helpers.
+  //
+  // `sub.count` is what lets the client assert pruning. A consumer that
+  // unsubscribes (or drops its handle) sends one fire-and-forget request and
+  // can never otherwise see whether the producer acted on it.
+  const publisher = peer.publisher();
+  peer.onRequest<{ key: string }>("sub.open", (args) => publisher.subscribe(args.key));
+  peer.onRequest<{ key: string; n: number }, number>("sub.emit", (args) => {
+    let sent = 0;
+    for (let i = 0; i < args.n; i += 1) sent += publisher.publish(args.key, { i });
+    return sent;
+  });
+  peer.onRequest<{ key: string }, number>("sub.end_key", (args) => publisher.endKey(args.key));
+  peer.onRequest<{ key: string }, number>("sub.count", (args) =>
+    publisher.subscribers(args.key),
+  );
+
+  // -------------------------------------------------------------------------
+  // Kind mismatch
+  // -------------------------------------------------------------------------
+  //
+  // The wire carries no "I want a stream" marker: whether a request is
+  // answered with one `resp` or a run of `stream` frames is decided entirely
+  // by which handler the *responder* registered. Each runtime resolves the
+  // mismatch locally, in the caller — so pinning it across the wire is really
+  // pinning that the counterpart emits the frames that resolution expects.
+  //
+  // `kind_stream` parks on the cancel rather than returning, because a caller
+  // that used `call` is by then gone: its runtime sends the stream cancel, and
+  // waiting for it keeps a terminal from racing the mismatch.
+  peer.onStreamRequest("kind_stream", async (_args, sender: StreamSender) => {
+    sender.sendItem("item");
+    await sender.cancelled;
+  });
+  peer.onRequest("kind_unary", () => "unary");
+
+  // -------------------------------------------------------------------------
+  // Stream cancel, observed from the producing end
+  // -------------------------------------------------------------------------
+  //
+  // The consumer half of a cancel is invisible to the consumer: it drops a
+  // handle and, by construction, hears nothing back. So the producer records
+  // what it saw and `cancel_report` hands it over on the next call. `refused`
+  // is the half that matters most — after the cancel the producer's outbound
+  // stream is closed, which is also why *no terminal is delivered*: the same
+  // gate that refuses this late item drops the handler's own end of stream.
+  let cancelSeen = false;
+  let lateRefused = false;
+  peer.onStreamRequest("slow_stream", async (_args, sender: StreamSender) => {
+    sender.sendItem("tick");
+    await sender.cancelled;
+    try {
+      sender.sendItem("late");
+      lateRefused = false;
+    } catch {
+      lateRefused = true;
+    }
+    // Set last: `observed` is what the client polls on, so ordering it after
+    // `refused` means a report that says "observed" carries a settled answer.
+    cancelSeen = true;
+  });
+  peer.onRequest("cancel_report", () => ({ observed: cancelSeen, refused: lateRefused }));
+
+  // -------------------------------------------------------------------------
+  // Malformed args
+  // -------------------------------------------------------------------------
+  //
+  // The point of the case. A typed Rust handler rejects args of the wrong
+  // shape with `-32602` before it is entered, because `serde_json::from_value`
+  // does it. TypeScript erases its types, so `onRequest<{a,b}>` alone is a
+  // convenience cast and `{ a: "x", b: 3 }` would happily answer `"x3"`. The
+  // `parse` validator is what closes that gap, and registering it here is what
+  // makes the two servers answer the same bad frame identically.
+  peer.onRequest<{ a: number; b: number }, number>(
+    "strict_add",
+    (args) => args.a + args.b,
+    {
+      parse: (raw) => {
+        const args = raw as { a?: unknown; b?: unknown } | null;
+        if (typeof args?.a !== "number" || typeof args.b !== "number") {
+          // A plain throw becomes `-32602`; an `rpcError`-shaped throw would
+          // be relayed verbatim instead, which is not what Rust does here.
+          throw new Error("strict_add expects { a: number, b: number }");
+        }
+        return { a: args.a, b: args.b };
+      },
+    },
+  );
+
+  // -------------------------------------------------------------------------
+  // Error paths
+  // -------------------------------------------------------------------------
+  //
+  // A handler that fails in a way that is not already an RPC error. Here that
+  // is a thrown `Error`, which the runtime maps to Internal carrying its
+  // message; Rust handlers return `Result<_, RpcError>` and so spell the same
+  // thing as an explicit `RpcError::internal`. Same code, same message.
+  peer.onRequest("throw_plain", () => {
+    throw new Error("plain failure");
+  });
+  // `fail_data` above pins `data` on a *response*; this pins it on a stream
+  // error terminal, which is a different frame and a different code path.
+  peer.onStreamRequest("boom_stream_data", (_args, sender: StreamSender) => {
+    sender.sendItem("first");
+    throw { code: -32053, msg: "mid-stream", data: { hint: "stream" } };
+  });
 
   // The truncation pair (see `truncationBattery`): work that is still
   // outstanding when the connection dies. Neither ever settles on its own,
@@ -195,6 +311,163 @@ export async function battery(client: Peer): Promise<void> {
   const back = await client.call<string>("big", { s: big });
   assert.equal(back.length, big.length);
   assert.ok(back === big, "1 MiB payload came back changed");
+
+  // -------------------------------------------------------------------------
+  // Pubsub: three endings, one subscription each
+  // -------------------------------------------------------------------------
+
+  // (a) The producer ends it: a clean completion, which is the control for
+  //     (b) and (c) — without it "every subscription just stops" would pass.
+  const ackA = await client.call<SubscriptionAckLike>("sub.open", { key: "a" });
+  // Registered immediately after the ack, which is the only ordering the wire
+  // lets either side rely on.
+  const subA = client.subscription<{ i: number }>(ackA.subscription_id);
+  assert.equal(
+    await client.call<number>("sub.emit", { key: "a", n: 3 }),
+    3,
+    "one subscriber, three events",
+  );
+  // No polling: the events were queued before the `sub.emit` response, and the
+  // wire is ordered, so they are routed by the time that call resolves.
+  for (let i = 0; i < 3; i += 1) {
+    const next = await subA.next();
+    assert.equal(next.done, false, "expected an event");
+    assert.deepEqual(next.value, { i }, "events arrive in order and typed");
+  }
+  assert.equal(await client.call<number>("sub.end_key", { key: "a" }), 1);
+  assert.equal(
+    (await subA.next()).done,
+    true,
+    "the producer's end marker completes the subscription cleanly",
+  );
+
+  // (b) The consumer unsubscribes: the producer must prune, which only the
+  //     producer can report.
+  const ackB = await client.call<SubscriptionAckLike>("sub.open", { key: "b" });
+  const subB = client.subscription<{ i: number }>(ackB.subscription_id);
+  assert.equal(await subscribers(client, "b"), 1);
+  assert.equal(await client.call<number>("sub.emit", { key: "b", n: 1 }), 1);
+  const onB = await subB.next();
+  assert.deepEqual(onB.value, { i: 0 }, "a live subscription receives before it is retired");
+  subB.unsubscribe();
+  await awaitSubscribers(client, "b", 0);
+
+  // (c) The consumer walks away from the iterator instead — `return()`, which
+  //     is what a `break` out of a `for await` calls, and this runtime's
+  //     stand-in for the Rust port simply dropping the handle.
+  const ackC = await client.call<SubscriptionAckLike>("sub.open", { key: "c" });
+  const subC = client.subscription<{ i: number }>(ackC.subscription_id);
+  assert.equal(await subscribers(client, "c"), 1);
+  await subC.return();
+  await awaitSubscribers(client, "c", 0);
+
+  // -------------------------------------------------------------------------
+  // Kind mismatch, in both directions
+  // -------------------------------------------------------------------------
+  //
+  // Both codes *and* both messages are asserted: the two runtimes phrase this
+  // identically on purpose, and a consumer telling the two mismatches apart
+  // has nothing else to go on.
+  const streamAsCall = await rejection(client.call("kind_stream", {}), "kind_stream");
+  assert.equal(streamAsCall.code, -32603);
+  assert.equal(streamAsCall.msg, "responder answered with a stream; use call_stream");
+
+  const unaryAsStream = client.callStream("kind_unary", {});
+  const unaryShape = await rejection(unaryAsStream.next(), "kind_unary");
+  assert.equal(unaryShape.code, -32603);
+  assert.equal(unaryShape.msg, "responder answered with a unary response; use call");
+  assert.equal((await unaryAsStream.next()).done, true, "the stream ends after the violation");
+
+  // -------------------------------------------------------------------------
+  // Stream cancel
+  // -------------------------------------------------------------------------
+  const slow = client.callStream<string>("slow_stream", {});
+  const tick = await slow.next();
+  assert.equal(tick.done, false, "slow_stream should open");
+  assert.equal(
+    (tick.value as StreamItem<string>).data,
+    "tick",
+    "the producer is provably live before the cancel",
+  );
+  await slow.return();
+  // Bounded poll: the cancel is fire-and-forget, so there is no moment the
+  // consumer can name at which the producer must already have seen it.
+  let report: { observed?: boolean; refused?: boolean } = {};
+  for (let i = 0; i < 200; i += 1) {
+    report = await client.call<{ observed: boolean; refused: boolean }>("cancel_report", {});
+    if (report.observed === true) break;
+    await sleep(5);
+  }
+  assert.equal(report.observed, true, "the producer never observed the cancel");
+  assert.equal(
+    report.refused,
+    true,
+    "a send after the cancel must be refused — which is also why no terminal is delivered: the same closed stream drops both",
+  );
+
+  // -------------------------------------------------------------------------
+  // Malformed args
+  // -------------------------------------------------------------------------
+  assert.equal(
+    await client.call<number>("strict_add", { a: 2, b: 3 }),
+    5,
+    "the validator must not reject good args",
+  );
+  // Code only: Rust carries serde's phrasing and TypeScript the validator's,
+  // and the cross-language contract is the code.
+  const badArgs = await rejection(client.call("strict_add", { a: "x", b: 3 }), "strict_add");
+  assert.equal(badArgs.code, -32602, "malformed args are InvalidParams");
+
+  // -------------------------------------------------------------------------
+  // Error paths
+  // -------------------------------------------------------------------------
+  // Message not asserted: the two runtimes name the missing op differently,
+  // and only the code is the contract.
+  const unknown = await rejection(client.call("no_such_op", {}), "no_such_op");
+  assert.equal(unknown.code, -32601, "unknown op is MethodNotFound");
+
+  const plain = await rejection(client.call("throw_plain", {}), "throw_plain");
+  assert.equal(plain.code, -32603, "a non-RPC handler failure is Internal");
+  assert.equal(plain.msg, "plain failure");
+  assert.equal(plain.data, undefined, "a synthesized Internal carries no data");
+
+  // `data` on a stream error terminal, which `fail_data` does not reach.
+  const dataStream = client.callStream<string>("boom_stream_data", {});
+  const firstOfData = await dataStream.next();
+  assert.equal(firstOfData.done, false);
+  assert.equal((firstOfData.value as StreamItem<string>).data, "first");
+  const terminal = await rejection(dataStream.next(), "boom_stream_data");
+  assert.equal(terminal.code, -32053);
+  assert.equal(terminal.msg, "mid-stream");
+  assert.deepEqual(terminal.data, { hint: "stream" });
+  assert.equal((await dataStream.next()).done, true, "the stream ends after the error");
+}
+
+/** The one field of a `SubscriptionAck` this file needs. */
+interface SubscriptionAckLike {
+  readonly subscription_id: string;
+}
+
+/** Live subscriptions the *producer* is holding on `key`. */
+function subscribers(client: Peer, key: string): Promise<number> {
+  return client.call<number>("sub.count", { key });
+}
+
+/**
+ * Poll {@link subscribers} until it reaches `want`, or throw.
+ *
+ * Bounded rather than instant because unsubscribe is fire-and-forget on the
+ * consumer side: the reply exists, but nothing on the consumer holds it, so
+ * the only observable is the producer's own count settling.
+ */
+async function awaitSubscribers(client: Peer, key: string, want: number): Promise<void> {
+  let last = -1;
+  for (let i = 0; i < 200; i += 1) {
+    last = await subscribers(client, key);
+    if (last === want) return;
+    await sleep(5);
+  }
+  throw new Error(`subscribers on ${key} never reached ${want} (last saw ${last})`);
 }
 
 /**

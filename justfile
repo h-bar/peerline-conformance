@@ -73,17 +73,24 @@ bindings-check:
 matrix:
     cargo test -p peerline-conformance --test matrix --test mounted --test iroh_seam
 
-# One battery, run live over a real WebSocket in *both* directions, so any
-# wire-level drift between the two runtimes fails here rather than in a
+# One battery, run live in *both* directions over two transport pairings, so
+# any wire-level drift between the two runtimes fails here rather than in a
 # consumer. Each language ships one server and one client, so a direction is
-# one language's server paired with the other's client — the same recipe
-# twice with the halves swapped. Loopback only; no network.
+# one language's server paired with the other's client — the same recipe with
+# the halves swapped. Loopback and Unix sockets only; no network.
+#
+# Two pairings, because the two languages have two framings that have to
+# agree. WebSocket carries frames the protocol already delimits. The Unix
+# socket leg instead puts the Rust `peerline-transport-uds` (a `LinesCodec`)
+# in front of the TypeScript `node:net` adapter (its own newline splitter with
+# a FIFO write queue) — two independent implementations of the same framing,
+# which until now had never been pointed at each other.
 #
 # The client's last act is the truncation battery, which tells the server to
 # crash so it can check what a dying peer looks like to a consumer. Each
 # direction therefore starts its own server and leaves it dead — which is
 # what `_interop` already does anyway.
-interop: interop-rust-serves interop-ts-serves
+interop: interop-rust-serves interop-ts-serves interop-uds-rust-serves interop-uds-ts-serves
 
 # Rust serves, TypeScript runs the battery.
 interop-rust-serves:
@@ -97,8 +104,40 @@ interop-ts-serves:
         "node {{justfile_directory()}}/ts/server.mjs" \
         "{{justfile_directory()}}/target/debug/conformance_client"
 
-# One direction: start SERVER, wait for its `LISTENING <url>` line, point
-# CLIENT at that url, require `BATTERY OK`.
+# Rust serves over a Unix socket, TypeScript dials it with `connectNodeSocket`.
+interop-uds-rust-serves:
+    @just _uds-leg "Rust serves over UDS → TypeScript battery" \
+        "{{justfile_directory()}}/target/debug/conformance_server" \
+        "node {{justfile_directory()}}/ts/client.mjs"
+
+# TypeScript serves over a Unix socket (`net.createServer` + `attachNodeSocket`),
+# the Rust UDS transport dials it.
+interop-uds-ts-serves:
+    @just _uds-leg "TypeScript serves over UDS → Rust battery" \
+        "node {{justfile_directory()}}/ts/server.mjs" \
+        "{{justfile_directory()}}/target/debug/conformance_client"
+
+# One Unix-socket direction. Both runners take the socket path as their single
+# argument, exactly where the WebSocket legs take a url, so this only has to
+# *choose* the path and hand it to `_interop` — which greps the same
+# `LISTENING` line and requires the same `BATTERY OK`.
+#
+# The path matters: `sun_path` is 104 bytes on Darwin (108 on Linux) and the
+# UDS transport appends a `.<pid>.<seq>.tmp` staging suffix before renaming,
+# so a socket under `$TMPDIR` — `/var/folders/…` on macOS, ~50 characters
+# before anything of ours — is uncomfortably close. An explicit short template
+# under `/tmp` keeps the whole path around 20 bytes.
+_uds-leg label server client:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    dir=$(mktemp -d /tmp/plc.XXXXXX)
+    trap 'rm -rf "$dir"' EXIT
+    just _interop "{{label}}" "{{server}} $dir/s" "{{client}}"
+
+# One direction: start SERVER, wait for its `LISTENING <address>` line, point
+# CLIENT at that address, require `BATTERY OK`. The address is a url or a
+# socket path — both runners on both sides dispatch on its shape, so this
+# recipe never has to know which transport it is driving.
 #
 # Both binaries are *built* and then spawned rather than run via `cargo run`:
 # killing `cargo run` leaves the child alive as an orphan holding the port.
@@ -106,7 +145,7 @@ _interop label server client:
     #!/usr/bin/env bash
     set -euo pipefail
     echo "interop: {{label}}"
-    cargo build --quiet -p peerline-conformance --features ws \
+    cargo build --quiet -p peerline-conformance --features ws,uds \
         --bin conformance_server --bin conformance_client
     pnpm --dir ../peerline-ts build >/dev/null
     log=$(mktemp -t peerline-interop.XXXXXX)

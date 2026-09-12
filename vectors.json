@@ -302,6 +302,60 @@
     "note": "the renamed pubsub delivery op; its former bare `event` name (see notif-with-args) is now an ordinary application op"
   },
   {
+    "name": "pubsub-end-notif",
+    "frame": "{\"ver\":\"1\",\"kind\":\"notif\",\"op\":\"$peerline/pubsub.end\",\"args\":{\"subscription_id\":\"sub-0\"}}",
+    "expect": {
+      "valid": true,
+      "kind": "notif",
+      "op": "$peerline/pubsub.end",
+      "args": {
+        "subscription_id": "sub-0"
+      }
+    },
+    "note": "the producer's clean-completion marker; the battery pins that it completes a subscription rather than truncating it, but only this pins that it carries the id and nothing else"
+  },
+  {
+    "name": "pubsub-unsubscribe-req",
+    "frame": "{\"ver\":\"1\",\"kind\":\"req\",\"id\":9,\"op\":\"$peerline/pubsub.unsubscribe\",\"args\":{\"subscription_id\":\"sub-0\"}}",
+    "expect": {
+      "valid": true,
+      "kind": "req",
+      "id": 9,
+      "op": "$peerline/pubsub.unsubscribe",
+      "args": {
+        "subscription_id": "sub-0"
+      }
+    },
+    "note": "a request, not a notification: the producer answers it, which is what lets a consumer know the id is retired — and is why a dropped handle has to send it fire-and-forget"
+  },
+  {
+    "name": "pubsub-unsubscribe-ack",
+    "frame": "{\"ver\":\"1\",\"kind\":\"resp\",\"id\":9,\"data\":{\"subscription_id\":\"sub-0\",\"removed\":true}}",
+    "expect": {
+      "valid": true,
+      "kind": "resp-ok",
+      "id": 9,
+      "data": {
+        "subscription_id": "sub-0",
+        "removed": true
+      }
+    },
+    "note": "unsubscribe is idempotent and never errors: an id the producer no longer recognises is answered `removed: false`, not with an error, because an `end` crossing an unsubscribe on the wire is normal traffic"
+  },
+  {
+    "name": "stream-cancel-notif",
+    "frame": "{\"ver\":\"1\",\"kind\":\"notif\",\"op\":\"$peerline/stream.cancel\",\"args\":{\"id\":1}}",
+    "expect": {
+      "valid": true,
+      "kind": "notif",
+      "op": "$peerline/stream.cancel",
+      "args": {
+        "id": 1
+      }
+    },
+    "note": "keyed by the originating *request* id, not a subscription id — the one place the two reserved conventions spell their identity differently, and the shape a dropped StreamReceiver emits"
+  },
+  {
     "name": "notif-no-args",
     "frame": "{\"ver\":\"1\",\"kind\":\"notif\",\"op\":\"ping\"}",
     "expect": {

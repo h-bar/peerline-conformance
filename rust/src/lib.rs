@@ -7,6 +7,15 @@
 //! multiplexing, peer symmetry (server → client call inside a client →
 //! server call) and a 1 MiB frame.
 //!
+//! Then the surface each implementation grew its own tests for but which had
+//! never met its counterpart over a wire: the **pubsub runtime layer**
+//! ([`Publisher`] / [`Subscription`], not hand-rolled frames), **kind
+//! mismatch** (a `call` against a stream handler and a `call_stream` against
+//! a unary one), **stream cancel** observed from the producing end,
+//! **malformed args** answered `-32602` by both servers, and the two error
+//! paths that are easy to get subtly wrong — an unknown op and a handler that
+//! fails in a way that is not already an [`RpcError`].
+//!
 //! [`truncation_battery`] is the tail that cannot live in [`battery`]: it
 //! kills the connection on purpose, to pin what a consumer sees when the
 //! peer dies with a stream open and a call in flight. It runs last, only in
@@ -42,11 +51,12 @@
 //! interop wire contract.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::time::Duration;
 
 use futures::stream::StreamExt;
-use peerline::runtime::{Error, Peer, StreamReceiver};
+use peerline::pubsub::SubscriptionAck;
+use peerline::runtime::{Error, Peer, StreamReceiver, Subscription};
 use peerline::wire::RpcError;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -71,6 +81,25 @@ struct N {
 }
 #[derive(Serialize, Deserialize)]
 struct Idx {
+    i: u32,
+}
+/// Names one application-chosen pubsub fan-out group. The key never
+/// reaches the wire as such — it is an argument to the *application's*
+/// subscribe op, which is the whole point of the convention reserving only
+/// the push ops.
+#[derive(Serialize, Deserialize)]
+struct Key {
+    key: String,
+}
+#[derive(Serialize, Deserialize)]
+struct KeyN {
+    key: String,
+    n: u32,
+}
+/// One published event. Typed on both ends, so a payload that arrived
+/// mis-shaped fails the decode rather than the assertion.
+#[derive(Serialize, Deserialize)]
+struct Ev {
     i: u32,
 }
 
@@ -159,6 +188,153 @@ pub fn register(peer: &Peer) {
     });
 
     peer.on_request("big", |e: Echo| async move { Ok::<_, RpcError>(e.s) });
+
+    // -----------------------------------------------------------------------
+    // Pubsub, through the runtime layer
+    // -----------------------------------------------------------------------
+    //
+    // The subscribe op is deliberately application-named — the convention
+    // reserves only the `$peerline/pubsub.*` push ops, so "what it takes to
+    // open a subscription" stays the application's contract. Everything else
+    // here goes through `Publisher`, never through hand-built frames: that is
+    // what makes this a check of the two *runtime layers* against each other
+    // rather than of two test helpers.
+    //
+    // `sub.count` is what lets the client assert pruning. A consumer that
+    // unsubscribes (or simply drops the handle) sends one fire-and-forget
+    // request and can never otherwise see whether the producer acted on it;
+    // asking the producer is the only honest way to pin "stops costing the
+    // producer anything".
+    let publisher = peer.publisher();
+    let p = publisher.clone();
+    peer.on_request("sub.open", move |k: Key| {
+        let p = p.clone();
+        // `subscribe` returns `Result<_, RpcError>` because a Rust peer may
+        // be at `max_subscriptions`; returning it as-is is the documented
+        // shape for an application subscribe handler.
+        async move { p.subscribe(k.key) }
+    });
+    let p = publisher.clone();
+    peer.on_request("sub.emit", move |q: KeyN| {
+        let p = p.clone();
+        async move {
+            let mut sent = 0usize;
+            for i in 0..q.n {
+                sent += p.publish(&q.key, &Ev { i }).map_err(rpc_err)?;
+            }
+            Ok::<_, RpcError>(sent)
+        }
+    });
+    let p = publisher.clone();
+    peer.on_request("sub.end_key", move |k: Key| {
+        let p = p.clone();
+        async move { Ok::<_, RpcError>(p.end_key(&k.key)) }
+    });
+    let p = publisher.clone();
+    peer.on_request("sub.count", move |k: Key| {
+        let p = p.clone();
+        async move { Ok::<_, RpcError>(p.subscribers(&k.key)) }
+    });
+
+    // -----------------------------------------------------------------------
+    // Kind mismatch
+    // -----------------------------------------------------------------------
+    //
+    // The wire carries no "I want a stream" marker: whether a request is
+    // answered with one `resp` or a run of `stream` frames is decided
+    // entirely by which handler the *responder* registered. Each runtime
+    // resolves the mismatch locally, in the caller — so pinning it across the
+    // wire is really pinning that the *counterpart* emits the frames that
+    // resolution expects.
+    //
+    // `kind_stream` parks on the cancel rather than returning, because a
+    // caller that used `call` is by then gone: its runtime sends the stream
+    // cancel, and waiting for it keeps a terminal from racing the mismatch.
+    peer.on_stream_request("kind_stream", |_: serde_json::Value, sender| async move {
+        sender.send_item(&"item").map_err(rpc_err)?;
+        sender.cancelled().await;
+        Ok(())
+    });
+    peer.on_request("kind_unary", |_: serde_json::Value| async move {
+        Ok::<_, RpcError>("unary")
+    });
+
+    // -----------------------------------------------------------------------
+    // Stream cancel, observed from the producing end
+    // -----------------------------------------------------------------------
+    //
+    // The consumer half of a cancel is invisible to the consumer: it drops a
+    // handle and, by construction, hears nothing back. So the producer
+    // records what it saw and `cancel_report` hands it over on the next call.
+    // `refused` is the half that matters most — after the cancel the
+    // producer's outbound stream is closed, which is why *no terminal is
+    // delivered*: the same gate that refuses this late item drops the
+    // handler's own end-of-stream on the floor.
+    let cancel_seen = Arc::new(AtomicBool::new(false));
+    let late_refused = Arc::new(AtomicBool::new(false));
+    let (seen, refused) = (cancel_seen.clone(), late_refused.clone());
+    peer.on_stream_request("slow_stream", move |_: serde_json::Value, sender| {
+        let (seen, refused) = (seen.clone(), refused.clone());
+        async move {
+            sender.send_item(&"tick").map_err(rpc_err)?;
+            sender.cancelled().await;
+            // Store `refused` first: `seen` is what the client polls on, so
+            // ordering it last means a report that says "observed" always
+            // carries a settled `refused`.
+            refused.store(sender.send_item(&"late").is_err(), Ordering::SeqCst);
+            seen.store(true, Ordering::SeqCst);
+            Ok(())
+        }
+    });
+    let (seen, refused) = (cancel_seen.clone(), late_refused.clone());
+    peer.on_request("cancel_report", move |_: serde_json::Value| {
+        let (seen, refused) = (seen.clone(), refused.clone());
+        async move {
+            Ok::<_, RpcError>(json!({
+                "observed": seen.load(Ordering::SeqCst),
+                "refused": refused.load(Ordering::SeqCst),
+            }))
+        }
+    });
+
+    // -----------------------------------------------------------------------
+    // Malformed args
+    // -----------------------------------------------------------------------
+    //
+    // A typed Rust handler rejects args of the wrong shape with `-32602`
+    // before it is ever entered — `serde_json::from_value` does it. TypeScript
+    // erases its types, so the TS half of this op registers the equivalent
+    // `opts.parse` validator explicitly. That asymmetry *is* the case: both
+    // servers must answer the same code to the same bad frame.
+    peer.on_request("strict_add", |a: Add| async move {
+        Ok::<_, RpcError>(a.a + a.b)
+    });
+
+    // -----------------------------------------------------------------------
+    // Error paths
+    // -----------------------------------------------------------------------
+    //
+    // A handler that fails in a way that is not already an `RpcError`. Rust
+    // handlers return `Result<_, RpcError>`, so there is no non-RPC value to
+    // throw and the spelling is an explicit `internal`; TypeScript throws a
+    // plain `Error` and its runtime maps it. Same code, same message, so the
+    // battery can assert both.
+    peer.on_request("throw_plain", |_: serde_json::Value| async move {
+        Err::<(), _>(RpcError::internal("plain failure"))
+    });
+    // `fail_data` above pins `data` on a *response*; this pins it on a stream
+    // error terminal, which is a different frame and a different code path.
+    peer.on_stream_request(
+        "boom_stream_data",
+        |_: serde_json::Value, sender| async move {
+            sender.send_item(&"first").map_err(rpc_err)?;
+            Err(RpcError {
+                code: -32053,
+                message: "mid-stream".into(),
+                data: Some(json!({ "hint": "stream" })),
+            })
+        },
+    );
 
     // The truncation pair (see `truncation_battery`): work that is still
     // outstanding when the connection dies. Neither ever settles on its own,
@@ -311,6 +487,256 @@ pub async fn battery(client: &Peer) {
         .expect("big");
     assert_eq!(back.len(), big.len());
     assert_eq!(back, big);
+
+    // -----------------------------------------------------------------------
+    // Pubsub: three endings, one subscription each
+    // -----------------------------------------------------------------------
+
+    // (a) The producer ends it: a clean completion, which is the control for
+    //     (b) and (c) — without it "every subscription just stops" would pass.
+    let ack: SubscriptionAck = client
+        .call("sub.open", &Key { key: "a".into() })
+        .await
+        .expect("sub.open a");
+    // Registered immediately after the ack, which is the only ordering the
+    // wire lets either side rely on.
+    let mut sub: Subscription<Ev> = client.subscription(ack.subscription_id);
+    let sent: usize = client
+        .call(
+            "sub.emit",
+            &KeyN {
+                key: "a".into(),
+                n: 3,
+            },
+        )
+        .await
+        .expect("sub.emit a");
+    assert_eq!(sent, 3, "one subscriber, three events");
+    // No polling: the events were queued before the `sub.emit` response, and
+    // the wire is ordered, so they are routed by the time that call resolves.
+    for i in 0..3u32 {
+        let ev = sub.next().await.expect("event").expect("event decoded");
+        assert_eq!(ev.i, i, "events arrive in order and typed");
+    }
+    let ended: usize = client
+        .call("sub.end_key", &Key { key: "a".into() })
+        .await
+        .expect("sub.end_key a");
+    assert_eq!(ended, 1);
+    assert!(
+        sub.next().await.is_none(),
+        "the producer's end marker completes the subscription cleanly"
+    );
+
+    // (b) The consumer unsubscribes: the producer must prune, which only
+    //     the producer can report.
+    let ack: SubscriptionAck = client
+        .call("sub.open", &Key { key: "b".into() })
+        .await
+        .expect("sub.open b");
+    let mut sub: Subscription<Ev> = client.subscription(ack.subscription_id);
+    assert_eq!(subscribers(client, "b").await, 1);
+    let sent: usize = client
+        .call(
+            "sub.emit",
+            &KeyN {
+                key: "b".into(),
+                n: 1,
+            },
+        )
+        .await
+        .expect("sub.emit b");
+    assert_eq!(sent, 1);
+    assert_eq!(
+        sub.next().await.expect("event").expect("decoded").i,
+        0,
+        "a live subscription receives before it is retired"
+    );
+    sub.unsubscribe();
+    await_subscribers(client, "b", 0).await;
+
+    // (c) The consumer just drops the handle — same wire effect, no explicit
+    //     call. (TypeScript has no destructor; its port uses the iterator's
+    //     `return()`, which is what a `break` out of a `for await` calls.)
+    let ack: SubscriptionAck = client
+        .call("sub.open", &Key { key: "c".into() })
+        .await
+        .expect("sub.open c");
+    let sub: Subscription<Ev> = client.subscription(ack.subscription_id);
+    assert_eq!(subscribers(client, "c").await, 1);
+    drop(sub);
+    await_subscribers(client, "c", 0).await;
+
+    // -----------------------------------------------------------------------
+    // Kind mismatch, in both directions
+    // -----------------------------------------------------------------------
+    //
+    // Both codes *and* both messages are asserted: the two runtimes phrase
+    // this identically on purpose, and a consumer telling the two mismatches
+    // apart has nothing else to go on.
+    let err = client
+        .call::<_, serde_json::Value>("kind_stream", &json!({}))
+        .await
+        .expect_err("a call against a stream handler cannot succeed");
+    match err {
+        Error::Rpc(e) => {
+            assert_eq!(e.code, -32603);
+            assert_eq!(
+                e.message,
+                "responder answered with a stream; use call_stream"
+            );
+        }
+        other => panic!("expected the stream-shape violation, got {other:?}"),
+    }
+
+    let mut rx: StreamReceiver<serde_json::Value> = client
+        .call_stream("kind_unary", &json!({}))
+        .expect("kind_unary");
+    match rx.next().await.expect("a terminal, not a silent end") {
+        Err(Error::Rpc(e)) => {
+            assert_eq!(e.code, -32603);
+            assert_eq!(
+                e.message,
+                "responder answered with a unary response; use call"
+            );
+        }
+        other => panic!("expected the unary-shape violation, got {other:?}"),
+    }
+    assert!(
+        rx.next().await.is_none(),
+        "the stream ends after the violation"
+    );
+
+    // -----------------------------------------------------------------------
+    // Stream cancel
+    // -----------------------------------------------------------------------
+    let mut rx: StreamReceiver<String> = client
+        .call_stream("slow_stream", &json!({}))
+        .expect("slow_stream");
+    assert_eq!(
+        rx.next().await.expect("opened").expect("first item").data,
+        "tick",
+        "the producer is provably live before the cancel"
+    );
+    drop(rx);
+    // Bounded poll: the cancel is fire-and-forget, so there is no moment the
+    // consumer can name at which the producer must already have seen it.
+    let mut report = json!(null);
+    for _ in 0..200 {
+        report = client
+            .call("cancel_report", &json!({}))
+            .await
+            .expect("cancel_report");
+        if report["observed"] == json!(true) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    assert_eq!(
+        report["observed"],
+        json!(true),
+        "the producer never observed the cancel"
+    );
+    assert_eq!(
+        report["refused"],
+        json!(true),
+        "a send after the cancel must be refused — which is also why no \
+         terminal is delivered: the same closed stream drops both"
+    );
+
+    // -----------------------------------------------------------------------
+    // Malformed args
+    // -----------------------------------------------------------------------
+    let ok: i64 = client
+        .call("strict_add", &Add { a: 2, b: 3 })
+        .await
+        .expect("strict_add");
+    assert_eq!(ok, 5, "the validator must not reject good args");
+    let err = client
+        .call::<_, ()>("strict_add", &json!({ "a": "x", "b": 3 }))
+        .await
+        .expect_err("strict_add with the wrong arg shape");
+    match err {
+        // Code only: Rust carries serde's phrasing and TypeScript the
+        // validator's, and the cross-language contract is the code.
+        Error::Rpc(e) => assert_eq!(e.code, -32602, "malformed args are InvalidParams"),
+        other => panic!("expected InvalidParams, got {other:?}"),
+    }
+
+    // -----------------------------------------------------------------------
+    // Error paths
+    // -----------------------------------------------------------------------
+    let err = client
+        .call::<_, ()>("no_such_op", &json!({}))
+        .await
+        .expect_err("an unregistered op cannot succeed");
+    match err {
+        // Message not asserted: the two runtimes name the missing op
+        // differently, and only the code is the contract.
+        Error::Rpc(e) => assert_eq!(e.code, -32601, "unknown op is MethodNotFound"),
+        other => panic!("expected MethodNotFound, got {other:?}"),
+    }
+
+    let err = client
+        .call::<_, ()>("throw_plain", &json!({}))
+        .await
+        .expect_err("throw_plain");
+    match err {
+        Error::Rpc(e) => {
+            assert_eq!(e.code, -32603, "a non-RPC handler failure is Internal");
+            assert_eq!(e.message, "plain failure");
+            assert_eq!(e.data, None, "a synthesized Internal carries no data");
+        }
+        other => panic!("expected Internal, got {other:?}"),
+    }
+
+    // `data` on a stream error terminal, which `fail_data` does not reach.
+    let mut rx: StreamReceiver<String> = client
+        .call_stream("boom_stream_data", &json!({}))
+        .expect("boom_stream_data");
+    assert_eq!(
+        rx.next().await.expect("first").expect("ok item").data,
+        "first"
+    );
+    match rx.next().await.expect("terminal") {
+        Err(Error::Rpc(e)) => {
+            assert_eq!(e.code, -32053);
+            assert_eq!(e.message, "mid-stream");
+            assert_eq!(e.data, Some(json!({ "hint": "stream" })));
+        }
+        other => panic!("expected the mid-stream error with data, got {other:?}"),
+    }
+    assert!(rx.next().await.is_none(), "the stream ends after the error");
+}
+
+/// Live subscriptions the *producer* is holding on `key`.
+async fn subscribers(client: &Peer, key: &str) -> usize {
+    client
+        .call(
+            "sub.count",
+            &Key {
+                key: key.to_string(),
+            },
+        )
+        .await
+        .expect("sub.count")
+}
+
+/// Poll [`subscribers`] until it reaches `want`, or fail.
+///
+/// Bounded rather than instant because unsubscribe is fire-and-forget on the
+/// consumer side: the reply exists, but nothing on the consumer holds it, so
+/// the only observable is the producer's own count settling.
+async fn await_subscribers(client: &Peer, key: &str, want: usize) {
+    let mut last = usize::MAX;
+    for _ in 0..200 {
+        last = subscribers(client, key).await;
+        if last == want {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    panic!("subscribers on {key} never reached {want} (last saw {last})");
 }
 
 /// The truncation half of the battery: what a consumer sees when the

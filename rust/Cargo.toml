@@ -21,22 +21,30 @@ publish = false
 # The two halves of the cross-language interop harness. Binaries rather than
 # examples: they are harnesses the `just interop` recipe spawns, not code
 # anyone should read as a usage demonstration.
+#
+# One pair, not one pair per transport: each binary picks its transport from
+# its argument (a `ws://` url or a filesystem path), so `_interop` spawns the
+# same two programs for every leg and only the address shape differs.
 [[bin]]
 name = "conformance_server"
-required-features = ["ws"]
+required-features = ["ws", "uds"]
 
 [[bin]]
 name = "conformance_client"
-required-features = ["ws"]
+required-features = ["ws", "uds"]
 
 [features]
 default = []
-# The interop binaries need a WebSocket to serve and dial over. The battery
+# The interop binaries need something to serve and dial over. The battery
 # itself is transport-agnostic, so a consumer that only wants `register` /
 # `battery` pulls no transport at all.
 # The extra tokio features are what the binaries need on top of the
 # library's `sync` + `time`: `#[tokio::main]` and an OS-assigned port.
 ws = ["dep:peerline-transport-ws", "tokio/macros", "tokio/rt-multi-thread", "tokio/net"]
+# The Unix-socket leg, which is what puts the Rust UDS transport in front of
+# the TypeScript `node:net` adapter. Both speak newline-delimited JSON with
+# the same frame ceiling, but until now neither had ever met the other.
+uds = ["dep:peerline-transport-uds", "tokio/macros", "tokio/rt-multi-thread", "tokio/net"]
 
 [dependencies]
 peerline = { workspace = true, features = ["runtime"] }
@@ -48,6 +56,7 @@ serde_json = "1"
 # runtime-agnostic.
 tokio = { version = "1.43", features = ["sync", "time"] }
 peerline-transport-ws = { workspace = true, optional = true }
+peerline-transport-uds = { workspace = true, optional = true }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "rt", "rt-multi-thread", "sync", "time"] }
