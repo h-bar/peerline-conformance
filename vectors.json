@@ -343,6 +343,52 @@
     "note": "unsubscribe is idempotent and never errors: an id the producer no longer recognises is answered `removed: false`, not with an error, because an `end` crossing an unsubscribe on the wire is normal traffic"
   },
   {
+    "name": "pubsub-event-with-seq",
+    "frame": "{\"ver\":\"1\",\"kind\":\"notif\",\"op\":\"$peerline/pubsub.event\",\"args\":{\"subscription_id\":\"sub-0\",\"event\":{\"k\":\"v\"},\"seq\":3}}",
+    "expect": {
+      "valid": true,
+      "kind": "notif",
+      "op": "$peerline/pubsub.event",
+      "args": {
+        "subscription_id": "sub-0",
+        "event": {
+          "k": "v"
+        },
+        "seq": 3
+      }
+    },
+    "note": "the replay stamp, and the additive half of the contract: compare with pubsub-event-notif, which is the same frame from a producer that does not replay — `seq` is absent there, never null, so an old peer's frames are unchanged and a new peer's are ignorable by an old one. Semantically a u53: a compliant producer never stamps past 2^53-1, because the TypeScript implementation would round a larger one into a cursor that matches the wrong event"
+  },
+  {
+    "name": "pubsub-gap-notif",
+    "frame": "{\"ver\":\"1\",\"kind\":\"notif\",\"op\":\"$peerline/pubsub.gap\",\"args\":{\"subscription_id\":\"sub-0\",\"missing_from\":1,\"missing_to\":2,\"reason\":\"rolled\"}}",
+    "expect": {
+      "valid": true,
+      "kind": "notif",
+      "op": "$peerline/pubsub.gap",
+      "args": {
+        "subscription_id": "sub-0",
+        "missing_from": 1,
+        "missing_to": 2,
+        "reason": "rolled"
+      }
+    },
+    "note": "the producer admitting it cannot serve a cursor in full. The range is closed on BOTH ends — this frame means seqs 1 and 2 are gone, two events, not one — and it is sent before the events that survived, so a consumer learns of the hole before it sees the far side. `reason` is an open string, not an enum: `rolled` is the only cause peerline has (nothing in its delivery path drops for slowness), and a consumer meeting an unfamiliar one must still see the gap rather than fail to classify the frame"
+  },
+  {
+    "name": "pubsub-resume-notif",
+    "frame": "{\"ver\":\"1\",\"kind\":\"notif\",\"op\":\"$peerline/pubsub.resume\",\"args\":{\"subscription_id\":\"sub-0\"}}",
+    "expect": {
+      "valid": true,
+      "kind": "notif",
+      "op": "$peerline/pubsub.resume",
+      "args": {
+        "subscription_id": "sub-0"
+      }
+    },
+    "note": "the one reserved push that travels consumer to producer: the consumer reporting that it has bound the subscription and can now receive. It carries no cursor — that rode the application's own subscribe op — because a second copy could only ever contradict the first. Without it a producer would have to replay at subscribe time, putting the replayed events on the wire ahead of the ack that names the subscription they belong to"
+  },
+  {
     "name": "stream-cancel-notif",
     "frame": "{\"ver\":\"1\",\"kind\":\"notif\",\"op\":\"$peerline/stream.cancel\",\"args\":{\"id\":1}}",
     "expect": {

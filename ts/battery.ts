@@ -117,6 +117,19 @@ export function registerHandlers(peer: Peer): void {
     publisher.subscribers(args.key),
   );
 
+  // Replay. `sub.open_from` is the second subscribe op the convention's shape
+  // demands: the cursor is an argument to the *application's* op, so an
+  // implementation that reserved a field for it would already be wrong.
+  // `sub.replay_on` exists because the window is a producer-side decision a
+  // client cannot otherwise make on a server it did not configure — and the
+  // forced-roll case needs a window of exactly two.
+  peer.onRequest<{ key: string; capacity: number }, number>("sub.replay_on", (args) =>
+    publisher.enableReplay(args.key, args.capacity),
+  );
+  peer.onRequest<{ key: string; after?: number }, SubscriptionAckLike>("sub.open_from", (args) =>
+    publisher.subscribeFrom(args.key, args.after),
+  );
+
   // -------------------------------------------------------------------------
   // Kind mismatch
   // -------------------------------------------------------------------------
@@ -362,6 +375,134 @@ export async function battery(client: Peer): Promise<void> {
   await awaitSubscribers(client, "c", 0);
 
   // -------------------------------------------------------------------------
+  // Pubsub: replay from a cursor
+  // -------------------------------------------------------------------------
+  //
+  // The case the seq / gap / resume frames exist for, and the one nothing else
+  // here can catch: a consumer that goes away and comes back must be served
+  // **exactly** what it missed and then the live stream. Off-by-one at that
+  // splice duplicates or holes, and both read as success to a test that only
+  // counts events.
+  //
+  // Every seq is asserted through `lastSeq`, which is the consumer's cursor —
+  // so this also pins that the two runtimes agree about *which* events a given
+  // cursor names, not merely about how many there are.
+  assert.equal(
+    await client.call<number>("sub.replay_on", { key: "r", capacity: 16 }),
+    16,
+  );
+
+  const ackR = await client.call<SubscriptionAckLike>("sub.open", { key: "r" });
+  assert.equal(
+    ackR.from_seq,
+    undefined,
+    "an ordinary subscribe replays nothing and says so",
+  );
+  const live = client.subscription<{ i: number }>(ackR.subscription_id);
+  assert.equal(await client.call<number>("sub.emit", { key: "r", n: 3 }), 3);
+  for (let i = 0; i < 3; i += 1) {
+    const next = await live.next();
+    assert.deepEqual(next.value, { i });
+    assert.equal(live.lastSeq, i, "a stamped event advances the cursor");
+  }
+  const cursor = live.lastSeq;
+
+  // Away. What the producer publishes now is what the resume must return —
+  // and the count of 0 proves nobody received it live.
+  live.unsubscribe();
+  await awaitSubscribers(client, "r", 0);
+  assert.equal(
+    await client.call<number>("sub.emit", { key: "r", n: 2 }),
+    0,
+    "nobody is subscribed — but the window keeps them",
+  );
+
+  // Back, with the cursor riding the application's own subscribe op.
+  const ackResumed = await client.call<SubscriptionAckLike>("sub.open_from", {
+    key: "r",
+    after: cursor,
+  });
+  assert.equal(
+    ackResumed.from_seq,
+    3,
+    "the ack says where the stream will pick up, before any event arrives",
+  );
+  const resumed = client.replayingSubscription<{ i: number }>(ackResumed.subscription_id);
+  // Exactly the two that were missed, carrying the seqs they were first
+  // published under — `i` restarts per `sub.emit` call, `seq` does not.
+  for (const [i, seq] of [
+    [0, 3],
+    [1, 4],
+  ] as const) {
+    const next = await resumed.next();
+    assert.deepEqual(next.value, { i });
+    assert.equal(resumed.lastSeq, seq, "replayed with its original seq");
+  }
+  // …and then live on the same handle, with no seam.
+  assert.equal(
+    await client.call<number>("sub.emit", { key: "r", n: 1 }),
+    1,
+    "the resumed subscription is a live one now",
+  );
+  const afterSplice = await resumed.next();
+  assert.deepEqual(afterSplice.value, { i: 0 });
+  assert.equal(resumed.lastSeq, 5, "one dense sequence across the splice");
+  resumed.unsubscribe();
+  await awaitSubscribers(client, "r", 0);
+
+  // -------------------------------------------------------------------------
+  // Pubsub: a forced roll is reported as a gap
+  // -------------------------------------------------------------------------
+  //
+  // A window of two under five events, resumed from a cursor three of them
+  // behind. What cannot be served must be *said* — in position, before the
+  // events that survived, with the range and the reason identical in both
+  // languages — and the subscription must continue afterwards. A consumer that
+  // could not tell this from a complete history is the failure the whole gap
+  // frame exists to prevent, and only a cross-language run can show the two
+  // runtimes agreeing about which events are gone.
+  assert.equal(await client.call<number>("sub.replay_on", { key: "g", capacity: 2 }), 2);
+  assert.equal(
+    await client.call<number>("sub.emit", { key: "g", n: 5 }),
+    0,
+    "no subscribers yet — this is all window",
+  );
+
+  const ackGap = await client.call<SubscriptionAckLike>("sub.open_from", {
+    key: "g",
+    after: 0,
+  });
+  assert.equal(ackGap.from_seq, 3, "seqs 1 and 2 have rolled off");
+  const holed = client.replayingSubscription<{ i: number }>(ackGap.subscription_id);
+
+  // Structural, like every other check in this file: it never imports the
+  // runtime, so the class is recognised by `name` and read by its fields.
+  const gap = (await failure(holed.next(), "the gap, before anything else")) as Error & {
+    subscriptionId?: string;
+    missingFrom?: number;
+    missingTo?: number;
+    reason?: string;
+    lost?: number;
+  };
+  assert.equal(gap.name, "GapError", `expected a GapError, got ${gap.name}: ${gap.message}`);
+  assert.equal(gap.subscriptionId, ackGap.subscription_id);
+  assert.equal(gap.missingFrom, 1, "the first seq the cursor asked for");
+  assert.equal(gap.missingTo, 2, "through the last one evicted, inclusive");
+  assert.equal(gap.lost, 2);
+  assert.equal(gap.reason, "rolled");
+
+  // Not an ending: the far side of the hole follows immediately. Here `i` and
+  // `seq` coincide, because all five came from one `sub.emit`.
+  assert.equal(holed.isActive, true, "a gap does not end the subscription");
+  for (const seq of [3, 4]) {
+    const next = await holed.next();
+    assert.deepEqual(next.value, { i: seq });
+    assert.equal(holed.lastSeq, seq);
+  }
+  holed.unsubscribe();
+  await awaitSubscribers(client, "g", 0);
+
+  // -------------------------------------------------------------------------
   // Kind mismatch, in both directions
   // -------------------------------------------------------------------------
   //
@@ -443,9 +584,14 @@ export async function battery(client: Peer): Promise<void> {
   assert.equal((await dataStream.next()).done, true, "the stream ends after the error");
 }
 
-/** The one field of a `SubscriptionAck` this file needs. */
+/** The fields of a `SubscriptionAck` this file needs. */
 interface SubscriptionAckLike {
   readonly subscription_id: string;
+  /**
+   * Where a replayed subscription will pick up — absent on an ordinary live
+   * one, which is itself part of what the battery asserts.
+   */
+  readonly from_seq?: number;
 }
 
 /** Live subscriptions the *producer* is holding on `key`. */

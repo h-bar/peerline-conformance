@@ -9,7 +9,8 @@
 //!
 //! Then the surface each implementation grew its own tests for but which had
 //! never met its counterpart over a wire: the **pubsub runtime layer**
-//! ([`Publisher`] / [`Subscription`], not hand-rolled frames), **kind
+//! ([`Publisher`] / [`Subscription`], not hand-rolled frames) including
+//! **replay from a cursor** and the **gap** a rolled window admits, **kind
 //! mismatch** (a `call` against a stream handler and a `call_stream` against
 //! a unary one), **stream cancel** observed from the producing end,
 //! **malformed args** answered `-32602` by both servers, and the two error
@@ -96,9 +97,26 @@ struct KeyN {
     key: String,
     n: u32,
 }
+/// Args of `sub.replay_on`: give a key a replay window this deep.
+#[derive(Serialize, Deserialize)]
+struct KeyCap {
+    key: String,
+    capacity: usize,
+}
+/// Args of `sub.open_from`: subscribe, resuming after this seq. `after` is
+/// absent for "from the beginning of the key's stream" — and being an
+/// ordinary optional field of an *application* op is the point: the cursor
+/// rides the app's own subscribe, which is what the convention reserves the
+/// push ops in order to leave room for.
+#[derive(Serialize, Deserialize)]
+struct KeyAfter {
+    key: String,
+    #[serde(default)]
+    after: Option<u64>,
+}
 /// One published event. Typed on both ends, so a payload that arrived
 /// mis-shaped fails the decode rather than the assertion.
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 struct Ev {
     i: u32,
 }
@@ -234,6 +252,23 @@ pub fn register(peer: &Peer) {
     peer.on_request("sub.count", move |k: Key| {
         let p = p.clone();
         async move { Ok::<_, RpcError>(p.subscribers(&k.key)) }
+    });
+
+    // Replay. `sub.open_from` is the second subscribe op the convention's
+    // shape demands: the cursor is an argument to the *application's* op, so
+    // an implementation that reserved a field for it would already be wrong.
+    // `sub.replay_on` exists because the window is a producer-side decision a
+    // client cannot otherwise make on a server it did not configure — and the
+    // forced-roll case needs a window of exactly two.
+    let p = publisher.clone();
+    peer.on_request("sub.replay_on", move |q: KeyCap| {
+        let p = p.clone();
+        async move { Ok::<_, RpcError>(p.enable_replay(&q.key, q.capacity)) }
+    });
+    let p = publisher.clone();
+    peer.on_request("sub.open_from", move |q: KeyAfter| {
+        let p = p.clone();
+        async move { p.subscribe_from(&q.key, q.after) }
     });
 
     // -----------------------------------------------------------------------
@@ -566,6 +601,149 @@ pub async fn battery(client: &Peer) {
     assert_eq!(subscribers(client, "c").await, 1);
     drop(sub);
     await_subscribers(client, "c", 0).await;
+
+    // -----------------------------------------------------------------------
+    // Pubsub: replay from a cursor
+    // -----------------------------------------------------------------------
+    //
+    // The case the seq / gap / resume frames exist for, and the one nothing
+    // else here can catch: a consumer that goes away and comes back must be
+    // served **exactly** what it missed and then the live stream. Off-by-one
+    // at that splice duplicates or holes, and both read as success to a test
+    // that only counts events.
+    //
+    // Every seq is asserted through `last_seq`, which is the consumer's
+    // cursor — so this also pins that the two runtimes agree about *which*
+    // events a given cursor names, not merely about how many there are.
+    assert_eq!(
+        client
+            .call::<_, usize>(
+                "sub.replay_on",
+                &json!({ "key": "r", "capacity": 16 })
+            )
+            .await
+            .expect("sub.replay_on r"),
+        16
+    );
+
+    let ack: SubscriptionAck = client
+        .call("sub.open", &Key { key: "r".into() })
+        .await
+        .expect("sub.open r");
+    assert_eq!(
+        ack.from_seq, None,
+        "an ordinary subscribe replays nothing and says so"
+    );
+    let mut sub: Subscription<Ev> = client.subscription(ack.subscription_id);
+    let sent: usize = client
+        .call("sub.emit", &KeyN { key: "r".into(), n: 3 })
+        .await
+        .expect("sub.emit r");
+    assert_eq!(sent, 3);
+    for i in 0..3u32 {
+        let ev = sub.next().await.expect("event").expect("decoded");
+        assert_eq!(ev.i, i);
+        assert_eq!(
+            sub.last_seq(),
+            Some(u64::from(i)),
+            "a stamped event advances the cursor"
+        );
+    }
+    let cursor = sub.last_seq();
+
+    // Away. What the producer publishes now is what the resume must return —
+    // and the count of 0 proves nobody received it live.
+    sub.unsubscribe();
+    await_subscribers(client, "r", 0).await;
+    let sent: usize = client
+        .call("sub.emit", &KeyN { key: "r".into(), n: 2 })
+        .await
+        .expect("sub.emit r while away");
+    assert_eq!(sent, 0, "nobody is subscribed — but the window keeps them");
+
+    // Back, with the cursor riding the application's own subscribe op.
+    let ack: SubscriptionAck = client
+        .call(
+            "sub.open_from",
+            &json!({ "key": "r", "after": cursor }),
+        )
+        .await
+        .expect("sub.open_from r");
+    assert_eq!(
+        ack.from_seq,
+        Some(3),
+        "the ack says where the stream will pick up, before any event arrives"
+    );
+    let mut sub: Subscription<Ev> = client.replaying_subscription(ack.subscription_id);
+    // Exactly the two that were missed, carrying the seqs they were first
+    // published under — `i` restarts per `sub.emit` call, `seq` does not.
+    for (i, seq) in [(0u32, 3u64), (1, 4)] {
+        let ev = sub.next().await.expect("replayed event").expect("decoded");
+        assert_eq!(ev.i, i);
+        assert_eq!(sub.last_seq(), Some(seq), "replayed with its original seq");
+    }
+    // …and then live on the same handle, with no seam.
+    let sent: usize = client
+        .call("sub.emit", &KeyN { key: "r".into(), n: 1 })
+        .await
+        .expect("sub.emit r live");
+    assert_eq!(sent, 1, "the resumed subscription is a live one now");
+    let ev = sub.next().await.expect("live event").expect("decoded");
+    assert_eq!(ev.i, 0);
+    assert_eq!(sub.last_seq(), Some(5), "one dense sequence across the splice");
+    sub.unsubscribe();
+    await_subscribers(client, "r", 0).await;
+
+    // -----------------------------------------------------------------------
+    // Pubsub: a forced roll is reported as a gap
+    // -----------------------------------------------------------------------
+    //
+    // A window of two under five events, resumed from a cursor three of them
+    // behind. What cannot be served must be *said* — in position, before the
+    // events that survived, with the range and the reason identical in both
+    // languages — and the subscription must continue afterwards. A consumer
+    // that could not tell this from a complete history is the failure the
+    // whole gap frame exists to prevent, and only a cross-language run can
+    // show the two runtimes agreeing about which events are gone.
+    assert_eq!(
+        client
+            .call::<_, usize>("sub.replay_on", &json!({ "key": "g", "capacity": 2 }))
+            .await
+            .expect("sub.replay_on g"),
+        2
+    );
+    let sent: usize = client
+        .call("sub.emit", &KeyN { key: "g".into(), n: 5 })
+        .await
+        .expect("sub.emit g");
+    assert_eq!(sent, 0, "no subscribers yet — this is all window");
+
+    let ack: SubscriptionAck = client
+        .call("sub.open_from", &json!({ "key": "g", "after": 0 }))
+        .await
+        .expect("sub.open_from g");
+    assert_eq!(ack.from_seq, Some(3), "seqs 1 and 2 have rolled off");
+    let mut sub: Subscription<Ev> = client.replaying_subscription(ack.subscription_id.clone());
+
+    match sub.next().await.expect("the gap, before anything else") {
+        Err(Error::Gap(gap)) => {
+            assert_eq!(gap.subscription_id, ack.subscription_id);
+            assert_eq!(gap.missing_from, 1, "the first seq the cursor asked for");
+            assert_eq!(gap.missing_to, 2, "through the last one evicted, inclusive");
+            assert_eq!(gap.lost(), 2);
+            assert_eq!(gap.reason, "rolled");
+        }
+        other => panic!("expected a gap first, got {other:?}"),
+    }
+    // Not an ending: the far side of the hole follows immediately. Here `i`
+    // and `seq` coincide, because all five came from one `sub.emit`.
+    for seq in [3u64, 4] {
+        let ev = sub.next().await.expect("surviving event").expect("decoded");
+        assert_eq!(u64::from(ev.i), seq);
+        assert_eq!(sub.last_seq(), Some(seq));
+    }
+    sub.unsubscribe();
+    await_subscribers(client, "g", 0).await;
 
     // -----------------------------------------------------------------------
     // Kind mismatch, in both directions

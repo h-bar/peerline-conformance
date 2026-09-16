@@ -24,7 +24,7 @@ ts/              one battery, one server, one client — the TypeScript half
 
 ## The static half: golden vectors
 
-`vectors.json` holds 112 entries. Each is a frame **as text** plus the
+`vectors.json` holds 115 entries. Each is a frame **as text** plus the
 disposition both implementations must agree on:
 
 ```jsonc
@@ -35,7 +35,7 @@ disposition both implementations must agree on:
 }
 ```
 
-**42 accept, 70 reject.** The reject majority is the point — compatibility is
+**45 accept, 70 reject.** The reject majority is the point — compatibility is
 mostly about refusing the same things. The set covers `bad-ver-2`,
 `unknown-key-on-req`, `notif-with-id`, `resp-both-data-and-err`,
 `req-id-fractional`, `stream-seq-string`, `resp-err-code-above-i32` and so on.
@@ -46,6 +46,14 @@ subscription completed cleanly, not that the frame saying so was
 `$peerline/pubsub.end` carrying `subscription_id` and nothing else. Hence
 `pubsub-event-notif`, `pubsub-end-notif`, `pubsub-unsubscribe-req`,
 `pubsub-unsubscribe-ack` and `stream-cancel-notif`.
+
+The replay frames are pinned the same way, and one of them is pinned by
+*contrast*: `pubsub-event-with-seq` is `pubsub-event-notif` plus the stamp, so
+the pair is what says the field is additive — absent, never null, from a
+producer that does not replay. `pubsub-gap-notif` fixes the spelling of the
+admission *and* the thing no schema could otherwise state, that its range is
+closed on both ends; `pubsub-resume-notif` fixes the one reserved push that
+travels consumer to producer.
 
 Storing frames as text rather than parsed objects keeps JSON-level divergence
 in scope: duplicate keys, number formats, lone surrogates.
@@ -68,7 +76,7 @@ expectations.
 One handler-set and one battery, defined once per language and mirrored case
 for case (`rust/src/lib.rs`, `ts/battery.ts`).
 
-`register` installs twenty-four handlers and `battery` calls them and asserts
+`register` installs twenty-six handlers and `battery` calls them and asserts
 the answers. The original thirteen — `echo`, `add`, `fail`, `fail_data`,
 `note`, `count`, `count_stream`, `boom_stream`, `barrier`, `reverse`, `big`,
 `hang`, `hang_stream` — cover typed args, error propagation with and without
@@ -85,6 +93,7 @@ which had never met its counterpart over a wire:
 | Handlers | Pins |
 | --- | --- |
 | `sub.open`, `sub.emit`, `sub.end_key`, `sub.count` | the pubsub **runtime layer** — `Publisher` / `Subscription`, not hand-built frames — through all three endings: the producer's `end` completes cleanly, and an unsubscribe *or* a dropped handle prunes the producer, which only the producer can report |
+| `sub.replay_on`, `sub.open_from` | **replay from a cursor**, and the **gap** a rolled window admits. A consumer takes three events, leaves, misses two, and comes back with the seq it last saw: it must receive exactly the two it missed, carrying the seqs they were first published under, and then the live stream — off-by-one at that splice duplicates or holes, and both read as success to anything that only counts. Then a window of two under five events, resumed from three behind, must produce `missing_from: 1, missing_to: 2, reason: "rolled"` in both languages *before* the survivors, with the subscription still live after it. The cursor rides `sub.open_from`'s own args, never a reserved field, because that is the convention's whole shape |
 | `kind_stream`, `kind_unary` | **kind mismatch** both ways: `call` against a stream handler and `call_stream` against a unary one. Each runtime resolves this locally, in the caller, so running it across the wire is what checks the *counterpart* emits the frames that resolution expects — same code and same message text in both languages |
 | `slow_stream`, `cancel_report` | **stream cancel** seen from the producing end: the cancel arrives, and a send after it is refused — which is also why no terminal is delivered, since the same closed stream drops both |
 | `strict_add` | **malformed args** answered `-32602` by both servers. Rust gets that free from `serde_json::from_value`; the TypeScript half registers the equivalent `opts.parse` validator, and that asymmetry is the case |
