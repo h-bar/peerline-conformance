@@ -15,7 +15,7 @@
 # Check-only by default: `bindings-check` exports into a scratch directory and
 # diffs, so checking never writes into ../peerline-ts. Run `just bindings`
 # explicitly when regeneration is the point.
-default: vectors bindings-check interop
+default: vectors bindings-check lifecycle-rust interop
 
 # --- the static half ---
 # `vectors.json` is raw frame text plus the disposition every implementation
@@ -70,8 +70,12 @@ bindings-check:
 # --- the live half ---
 
 # The battery against every transport, so drift *between* transports fails.
-matrix:
+matrix: lifecycle-rust
     cargo test -p peerline-conformance --test matrix --test mounted --test iroh_seam
+
+# Process-bounded UDS probes for runtime teardown and callback reentrancy.
+lifecycle-rust:
+    cargo test -p peerline-conformance --features uds --test lifecycle_regressions
 
 # One battery, run live in *both* directions over two transport pairings, so
 # any wire-level drift between the two runtimes fails here rather than in a
